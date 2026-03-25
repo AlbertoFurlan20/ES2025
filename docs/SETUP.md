@@ -1,6 +1,10 @@
 # Setup
 Steps for building the RTEMS toolchain and BSP for STM32F4 Discovery on macOS.
 
+## 0. Prerequisites
+- clone https://gitlab.rtems.org/rtems/rtos/rtems.git
+- clone https://gitlab.rtems.org/rtems/tools/rtems-source-builder.git rbs
+
 ## 1. Brew istall texinfo 
 - this specific to avoid the texinfo manual install that does the toolchain builder
 ```bash
