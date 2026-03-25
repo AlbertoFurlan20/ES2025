@@ -1,7 +1,8 @@
 RTEMS_PREFIX = /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/7
+RTEMS_TOOL_PREFIX = /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems
 BSP_LIB      = $(RTEMS_PREFIX)/arm-rtems7/stm32f4/lib
-CC           = $(RTEMS_PREFIX)/bin/arm-rtems7-gcc
-OBJCOPY      = $(RTEMS_PREFIX)/bin/arm-rtems7-objcopy
+CC           = $(RTEMS_TOOL_PREFIX)/bin/arm-rtems7-gcc
+OBJCOPY      = $(RTEMS_TOOL_PREFIX)/bin/arm-rtems7-objcopy
 
 CFLAGS = \
     -mcpu=cortex-m4 \
