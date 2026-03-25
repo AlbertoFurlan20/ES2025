@@ -31,6 +31,7 @@ cd /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems
 cat > config.ini << 'EOF'
 [arm/stm32f4]
 BUILD_TESTS = True
+# BSP_CONSOLE_BAUD = 115200 -- This throws "Unknown configuration option: BSP_CONSOLE_BAUD" 
 EOF
 ```
 
