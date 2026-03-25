@@ -16,7 +16,7 @@ rtems_task alive_task(rtems_task_argument ignored)
 
     while (1) {
         printf("[f] alive\n");
-        printk("[k] alive\n");
+        // printk("[k] alive\n");
         rtems_task_wake_after(ticks_per_sec);
     }
 }
