@@ -45,3 +45,9 @@
 
 # [JetBrains]
 **/.idea
+
+# [Binaries]
+*.bin
+
+# [Random trash]
+rtems_hello
