@@ -13,8 +13,7 @@ rtems_task Init(rtems_task_argument ignored)
 {
     rtems_status_code sc;
 
-    printf("*** [f] RTEMS alive driver starting ***\n");
-    // printk("*** [k] RTEMS alive driver starting ***\n");
+    printf("[DEBUG] [RTEMS alive] Starting ...\n");
 
     /* Create the heartbeat task */
     sc = rtems_task_create(
@@ -27,7 +26,7 @@ rtems_task Init(rtems_task_argument ignored)
     );
     if (sc != RTEMS_SUCCESSFUL) {
         printf("[f] Failed to create alive_task: %s\n", rtems_status_text(sc));
-        // printk("[k] Failed to create alive_task: %s\n", rtems_status_text(sc));
+
         rtems_task_suspend(RTEMS_SELF);
     }
 
