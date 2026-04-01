@@ -1,13 +1,12 @@
 project(alive_driver C)
 
-set(SRCS
-        alive.c
-        init.c
-        sensor.c
-        constants.h
-)
+file(GLOB SRCS src/*.c)
 
-add_executable(sensor_test.elf ${SRCS})
+file(GLOB INCLUDE inc/*.c)
+
+add_executable(sensor_test.elf ${SRCS} ${INCLUDE})
+
+target_include_directories(sensor_test.elf PRIVATE inc)
 
 # Post-build: generate .bin for flashing
 add_custom_command(TARGET sensor_test.elf POST_BUILD
