@@ -1,7 +1,7 @@
 #include <rtems.h>
 #include <stdio.h>
 
-#include "constants.h"
+#include "../inc/constants.h"
 
 rtems_task sensor_task(rtems_task_argument ignored)
 {
