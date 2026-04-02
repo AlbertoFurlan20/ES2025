@@ -1,16 +1,18 @@
 #include <rtems.h>
 #include <rtems/bspIo.h>
-#include <stdio.h>
+#include <cstdio>
 
 #include "constants.h"
 
-rtems_task sensor_task(rtems_task_argument ignored);
 rtems_task alive_task(rtems_task_argument ignored);
+rtems_task bmp180_task(rtems_task_argument ignored);
+rtems_task bmp180_task_manual(rtems_task_argument ignored);
 
-void setupTask(rtems_id task_id, const char title[4], const int prio, rtems_task* taskRrf)
+template <typename TaskType>
+void setupTask(rtems_id task_id, const char title[4], const int prio, TaskType taskRrf)
 {
     rtems_status_code task = rtems_task_create(
-        rtems_build_name(title[0], title[1], title[2],title[3]),
+        rtems_build_name(title[0], title[1], title[2], title[3]),
         prio,
         RTEMS_MINIMUM_STACK_SIZE,
         RTEMS_DEFAULT_MODES,
@@ -42,11 +44,14 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 {
     printf("%s %s %s\n", DEBUG_TITLE, STARTING_TITLE, SENSOR_TASK_TITLE);
 
-    rtems_id sensor_task_id;
-    rtems_id heartbeat_task_id;
+    // TODO - check that by init + constexpr i don't fuck things up
+    constexpr rtems_id heartbeat_task_id = 0;
+    constexpr rtems_id sensor_task_id = 0;
+    constexpr rtems_id sensor_manual_task_id = 0;
 
-    setupTask(sensor_task_id, "SENS", 1, sensor_task);
     setupTask(heartbeat_task_id, "ALVE", 1, alive_task);
+    setupTask(sensor_task_id, "SNSA", 1, bmp180_task);
+    setupTask(sensor_manual_task_id, "SNSM", 1, bmp180_task_manual);
 
     rtems_task_suspend(RTEMS_SELF);
 }

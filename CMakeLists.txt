@@ -15,8 +15,12 @@ set(CMAKE_C_COMPILER_WORKS 1)
 set(CMAKE_CXX_COMPILER_WORKS 1)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
+# Set C++17 standard and ensure it's required
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # 3. NOW call project() so it initializes with the compilers specified above
-project(ES2025 C)
+project(ES2025 CXX)
 
 # 4. Next, setup RTEMS specific flags and includes
 set(RTEMS_BSP_LIB ${RTEMS_PREFIX}/7/arm-rtems7/stm32f4/lib)
