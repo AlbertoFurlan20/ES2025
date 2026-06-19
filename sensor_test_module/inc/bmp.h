@@ -36,7 +36,7 @@ namespace bmp
      *
      * @return 0 if no errors, error code elsewhere
      */
-    static int bmp180_load_calibration(bmp180_dev_t* self);
+    int bmp180_load_calibration(bmp180_dev_t* self);
 
     /**
  * @brief Reads the uncompensated temperature value from the sensor
@@ -105,8 +105,8 @@ namespace bmp
  *
  * @return 0 if the both @see bmp180_read_ut and @see bmp180_read_up succeed and the compensation is done, error code otherwise.
  */
-    static int bmp180_do_measurement(bmp180_dev_t* self,
-                                     bmp180_measurement_t* result);
+    int bmp180_do_measurement(bmp180_dev_t* self,
+                              bmp180_measurement_t* result);
 
     /**
  * @brief Wrapper for ioctl calls to device
@@ -143,6 +143,17 @@ namespace bmp
         const char* dev_path,
         bmp180_oss_t oss
     );
+
+    /**
+     * @brief Validates bmp180_compensate against the datasheet worked example
+     *        (BST-BMP180-DS000-09 section 3.5). Hardware-independent.
+     *
+     * @details Feeds the datasheet calibration constants + raw UT=27898,
+     *          UP=23843 (oss=0); expects T=150 (15.0 degC) and P=69964 Pa.
+     *
+     * @return 0 on PASS, -1 on FAIL.
+     */
+    int bmp180_selftest();
 };
 
 #endif //ES2025_BMP_INC_H
