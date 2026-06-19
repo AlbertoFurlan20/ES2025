@@ -2,6 +2,8 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
+#include <cstdio>
+
 #include "bmp.h"
 #include "bmp_regs.h"
 
@@ -43,7 +45,7 @@ static int bmp::bmp180_read_regs(const i2c_dev* dev, uint8_t reg,
 }
 
 
-static int bmp::bmp180_load_calibration(bmp180_dev_t* self)
+int bmp::bmp180_load_calibration(bmp180_dev_t* self)
 {
     uint8_t raw[BMP180_CALIB_DATA_LEN];
 
@@ -209,7 +211,7 @@ static void bmp::bmp180_compensate(
 }
 
 
-static int bmp::bmp180_do_measurement(bmp180_dev_t* self,
+int bmp::bmp180_do_measurement(bmp180_dev_t* self,
                                       bmp180_measurement_t* result)
 {
     if (!self->calib_loaded)
@@ -350,12 +352,42 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
         return std::make_pair(RTEMS_IO_ERROR, nullptr);
     }
 
-    const auto sc = i2c_dev_register(&dev->base, dev_path);
-
-    if (sc != 1)
+    // i2c_dev_register returns 0 on success; on failure it already calls
+    // dev->destroy() internally, so on error we must NOT touch dev again.
+    if (i2c_dev_register(&dev->base, dev_path) != 0)
     {
-        i2c_dev_destroy_and_free(&dev->base);
+        return std::make_pair(RTEMS_INTERNAL_ERROR, nullptr);
     }
 
-    return std::make_pair(sc ? RTEMS_SUCCESSFUL : RTEMS_INTERNAL_ERROR, dev);
+    return std::make_pair(RTEMS_SUCCESSFUL, dev);
+}
+
+
+int bmp::bmp180_selftest()
+{
+    // Datasheet BST-BMP180-DS000-09, section 3.5 worked example.
+    const bmp180_calib_t cal = {
+        408,    // AC1
+        -72,    // AC2
+        -14383, // AC3
+        32741,  // AC4
+        32757,  // AC5
+        23153,  // AC6
+        6190,   // B1
+        4,      // B2
+        -32768, // MB
+        -8711,  // MC
+        2868    // MD
+    };
+
+    int32_t temp_cdeg = 0;
+    int32_t pressure_pa = 0;
+    bmp180_compensate(&cal, 27898, 23843, 0, &temp_cdeg, &pressure_pa);
+
+    const bool ok = (temp_cdeg == 150) && (pressure_pa == 69964);
+    printf("[SELFTEST] compensate: T=%ld (exp 150)  P=%ld (exp 69964)  -> %s\n",
+           static_cast<long>(temp_cdeg), static_cast<long>(pressure_pa),
+           ok ? "PASS" : "FAIL");
+
+    return ok ? 0 : -1;
 }

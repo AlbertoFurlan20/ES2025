@@ -3,6 +3,8 @@
 #include <cstdio>
 
 #include "constants.h"
+#include "i2c1.h"
+#include "bmp.h"
 
 rtems_task alive_task(rtems_task_argument ignored);
 rtems_task bmp180_task(rtems_task_argument ignored);
@@ -44,14 +46,38 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 {
     printf("%s %s %s\n", DEBUG_TITLE, STARTING_TITLE, SENSOR_TASK_TITLE);
 
+    // Hardware-independent check of the Bosch compensation math.
+    bmp::bmp180_selftest();
+
+    // Bring up the hardware I2C1 bus the BMP180 driver depends on.
+    if (stm32f4_register_i2c1("/dev/i2c-1") != 0)
+    {
+        printf("[DEBUG] [ERROR] Failed to register I2C1 bus, killing init...\n");
+        rtems_task_suspend(RTEMS_SELF);
+    }
+
+    // Register the BMP180 device node once on top of the I2C1 bus. This is the
+    // first real I2C traffic: a chip-id read. An IO error here now means the
+    // sensor wiring/pins, not the software layers below.
+    const auto [reg_outcome, dev] =
+        bmp::bmp180_register("/dev/i2c-1", "/dev/bmp180-0", BMP180_OSS_HIGH_RESOLUTION);
+    if (reg_outcome != RTEMS_SUCCESSFUL or dev == nullptr)
+    {
+        printf("[DEBUG] [ERROR] BMP180 registration failed (%s)\n",
+               rtems_status_text(reg_outcome));
+        // Keep going: the heartbeat still proves the system is alive.
+    }
+    else
+    {
+        printf("%s BMP180 registered on /dev/bmp180-0\n", DEBUG_TITLE);
+    }
+
     // TODO - check that by init + constexpr i don't fuck things up
     constexpr rtems_id heartbeat_task_id = 0;
     constexpr rtems_id sensor_task_id = 0;
-    constexpr rtems_id sensor_manual_task_id = 0;
 
     setupTask(heartbeat_task_id, "ALVE", 1, alive_task);
     setupTask(sensor_task_id, "SNSA", 1, bmp180_task);
-    setupTask(sensor_manual_task_id, "SNSM", 1, bmp180_task_manual);
 
     rtems_task_suspend(RTEMS_SELF);
 }
@@ -62,6 +88,10 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 
 #define CONFIGURE_MICROSECONDS_PER_TICK     1000   /* 1 ms tick → 1000 ticks/sec */
 #define CONFIGURE_MAXIMUM_TASKS             4
+
+/* stdin/stdout/stderr take 3 fds; default max is 3 → any open() returns ENFILE.
+ * Bump so the I2C bus node + device node can be opened. */
+#define CONFIGURE_MAXIMUM_FILE_DESCRIPTORS  8
 
 #define CONFIGURE_RTEMS_INIT_TASKS_TABLE
 #define CONFIGURE_INIT_TASK_ENTRY_POINT     Entrypoint
