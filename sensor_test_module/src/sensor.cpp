@@ -1,5 +1,6 @@
 #include <rtems.h>
 #include <cstdio>
+#include <cstdint>
 #include <stdexcept>
 
 #include <fcntl.h>
@@ -213,5 +214,156 @@ rtems_task bmp180_task_manual(const rtems_task_argument ignored)
 
             return;
         }
+    }
+}
+
+
+/**
+ * @brief Integer square root (no FPU/float-printf dependency).
+ */
+static uint32_t isqrt32(uint64_t v)
+{
+    uint64_t rem = v;
+    uint64_t root = 0;
+    uint64_t bit = 1ULL << 62;
+
+    while (bit > rem)
+    {
+        bit >>= 2;
+    }
+    while (bit != 0)
+    {
+        if (rem >= root + bit)
+        {
+            rem -= root + bit;
+            root = (root >> 1) + bit;
+        }
+        else
+        {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return static_cast<uint32_t>(root);
+}
+
+
+/**
+ * @brief OSS sweep + noise logger. For each oversampling mode it takes a burst
+ *        of back-to-back samples and reports mean / stddev / peak-to-peak
+ *        pressure, mean temperature and wall-clock ms per sample. After the
+ *        sweep it falls into a normal 1 Hz read loop at OSS=HIGH_RESOLUTION.
+ *
+ * @details Sampling is back-to-back (no inter-sample sleep) so the timing
+ *          column reflects the sensor's conversion time, and the noise figures
+ *          are not aliased by the 1 s scheduler tick.
+ */
+rtems_task bmp180_oss_sweep_task(const rtems_task_argument ignored)
+{
+    (void)ignored;
+
+    const int fd = open("/dev/bmp180-0", O_RDWR);
+    if (fd < 0)
+    {
+        perror("open /dev/bmp180-0");
+        rtems_task_delete(RTEMS_SELF);
+
+        return;
+    }
+
+    constexpr int N = 32;            // samples per OSS mode
+    constexpr int WARMUP = 3;        // discarded settling samples
+    const rtems_interval tps = rtems_clock_get_ticks_per_second();
+
+    printf("\n=== BMP180 OSS sweep + noise (%d samples/mode, back-to-back) ===\n", N);
+    printf("OSS  mean_Pa  std_Pa  p2p_Pa  mean_degC  ms/smp\n");
+
+    for (int oss = 0; oss <= 3; ++oss)
+    {
+        bmp180_oss_t mode = static_cast<bmp180_oss_t>(oss);
+        if (ioctl(fd, BMP180_IOCTL_SET_OSS, &mode) != 0)
+        {
+            perror("BMP180_IOCTL_SET_OSS");
+            continue;
+        }
+
+        bmp180_measurement_t m;
+        for (int i = 0; i < WARMUP; ++i)
+        {
+            ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m);
+        }
+
+        int32_t samples[N];
+        int64_t sum_p = 0;
+        int64_t sum_t = 0;
+        int32_t pmin = INT32_MAX;
+        int32_t pmax = INT32_MIN;
+        int got = 0;
+
+        const rtems_interval t0 = rtems_clock_get_ticks_since_boot();
+        for (int i = 0; i < N; ++i)
+        {
+            if (ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m) != 0)
+            {
+                perror("BMP180_IOCTL_READ_MEASUREMENT");
+                continue;
+            }
+            samples[got] = m.pressure_pa;
+            sum_p += m.pressure_pa;
+            sum_t += m.temperature_cdeg;
+            if (m.pressure_pa < pmin) pmin = m.pressure_pa;
+            if (m.pressure_pa > pmax) pmax = m.pressure_pa;
+            ++got;
+        }
+        const rtems_interval t1 = rtems_clock_get_ticks_since_boot();
+
+        if (got == 0)
+        {
+            printf("%3d  (no samples)\n", oss);
+            continue;
+        }
+
+        const int32_t mean_p = static_cast<int32_t>(sum_p / got);
+        int64_t var_acc = 0;
+        for (int i = 0; i < got; ++i)
+        {
+            const int64_t d = samples[i] - mean_p;
+            var_acc += d * d;
+        }
+        const uint32_t std_p = isqrt32(static_cast<uint64_t>(var_acc / got));
+        const int32_t mean_t = static_cast<int32_t>(sum_t / got); // 0.1 degC
+        const uint32_t ms_per =
+            static_cast<uint32_t>((static_cast<uint64_t>(t1 - t0) * 1000u / tps) / got);
+
+        printf("%3d  %7ld  %6lu  %6ld  %4ld.%ld     %4lu\n",
+               oss,
+               static_cast<long>(mean_p),
+               static_cast<unsigned long>(std_p),
+               static_cast<long>(pmax - pmin),
+               static_cast<long>(mean_t / 10), static_cast<long>(mean_t % 10),
+               static_cast<unsigned long>(ms_per));
+    }
+
+    printf("=== sweep done; resuming 1 Hz read at OSS=HIGH_RESOLUTION ===\n\n");
+
+    bmp180_oss_t hi = BMP180_OSS_HIGH_RESOLUTION;
+    ioctl(fd, BMP180_IOCTL_SET_OSS, &hi);
+
+    while (true)
+    {
+        bmp180_measurement_t m;
+        if (ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m) == 0)
+        {
+            printf("Temperature: %ld.%ld degC   Pressure: %ld Pa\n",
+                   static_cast<long>(m.temperature_cdeg / 10),
+                   static_cast<long>(m.temperature_cdeg % 10),
+                   static_cast<long>(m.pressure_pa));
+        }
+        else
+        {
+            perror("BMP180_IOCTL_READ_MEASUREMENT");
+        }
+
+        rtems_task_wake_after(tps);
     }
 }

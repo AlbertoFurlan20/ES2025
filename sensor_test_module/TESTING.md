@@ -63,30 +63,51 @@ Worked example for **Velate (Varese), h ≈ 480 m**:
 - reading `968.2 hPa / 0.9444 ≈ 1025 hPa`
 - → compare to **Malpensa (LIMC) METAR QNH**; within a few hPa = accurate.
 
-## 4. Noise / repeatability
+## 4. OSS sweep + noise logger (automated)
 
-Leave it still, capture ~60 samples, compute mean ± stddev.
+The `SWEP` task (`bmp180_oss_sweep_task`, wired in `init.cpp`) runs once at
+boot: for each oversampling mode it takes **32 back-to-back samples** and prints
+a summary row, then drops into a normal 1 Hz read loop at `OSS=HIGH_RESOLUTION`.
+Sampling is back-to-back (no inter-sample sleep) so the timing column reflects
+the sensor's conversion time and the noise is not aliased by the 1 s tick.
 
-- At `OSS = ULTRA_HIGH_RES` (3): expect a few Pa of noise, ~0.1 °C on temp.
-- Large jumps or drift = wiring/pull-up/power problem.
+Example output:
 
-## 5. Oversampling (OSS) sweep
+```
+=== BMP180 OSS sweep + noise (32 samples/mode, back-to-back) ===
+OSS  mean_Pa  std_Pa  p2p_Pa  mean_degC  ms/smp
+  0    96820       5      18    24.4          5
+  1    96819       3      11    24.4          8
+  2    96820       2       7    24.4         14
+  3    96821       1       4    24.4         26
+=== sweep done; resuming 1 Hz read at OSS=HIGH_RESOLUTION ===
+```
 
-Cycle `BMP180_OSS_ULTRA_LOW_POWER → … → BMP180_OSS_ULTRA_HIGH_RES` via the
-`BMP180_IOCTL_SET_OSS` ioctl. Expect: noise **decreases** and per-sample
-conversion time **increases** with higher OSS (datasheet: 4.5→25.5 ms).
+How to read it:
 
-## 6. Fault injection (driver robustness)
+- **std_Pa / p2p_Pa** should **decrease** as OSS rises (more oversampling = less
+  noise). If they don't, suspect pull-ups, wiring or power.
+- **ms/smp** should **increase** with OSS (datasheet pressure conversion grows
+  ~4.5 → 25.5 ms).
+- **mean_Pa** should stay ~constant across modes (same true pressure).
+- Stats are integer-only (`isqrt32`) — no float / `printf("%f")` dependency.
+
+Tunables at the top of `bmp180_oss_sweep_task`: `N` (samples/mode), `WARMUP`
+(discarded settling samples). To run the plain 1 Hz reader without the sweep,
+swap `bmp180_oss_sweep_task` back to `bmp180_task` in `init.cpp`.
+
+## 5. Fault injection (driver robustness)
 
 With the read loop running, briefly disconnect **SDA**.
 
-- **Expect:** `BMP180_IOCTL_READ_MEASUREMENT` returns IO errors; after >3
-  consecutive failures the task prints "Too many consecutive failures" and
-  deletes itself. The heartbeat `[f] alive` **keeps printing** — no system
-  freeze (all I2C polls are bounded by `I2C_POLL_BUDGET`).
+- **Expect:** reads return IO errors (`perror` logs them) and the heartbeat
+  `[f] alive` **keeps printing** — no system freeze, because every I2C poll is
+  bounded by `I2C_POLL_BUDGET` in `i2c1.cpp`.
+- The plain `bmp180_task` reader additionally self-deletes after >3 consecutive
+  failures ("Too many consecutive failures"); the `SWEP` reader logs and retries.
 - Reconnect and reset to resume.
 
-## 7. Temperature cross-check
+## 6. Temperature cross-check
 
 Warm the chip with a finger / cool with canned air; temperature should track
 within ~1 °C of a reference thermometer at steady state.
