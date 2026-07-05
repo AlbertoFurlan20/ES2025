@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-source ./.env/build_env_setup.sh
+source ../.env/build_env_setup.sh
 
 rm -f compilation_output.exe
 

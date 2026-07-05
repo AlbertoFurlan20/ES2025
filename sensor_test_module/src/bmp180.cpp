@@ -2,6 +2,7 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
+#include <cstdint>
 #include <cstdio>
 
 #include "bmp.h"

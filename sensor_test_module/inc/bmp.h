@@ -10,7 +10,6 @@
 
 #include <rtems.h>
 
-#include "bmp180_ioctls.h"
 #include "bmp_types.h"
 
 namespace bmp

@@ -5,7 +5,12 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # 2. Define exactly where the compiler is located BEFORE project()
-set(RTEMS_PREFIX /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems)
+# Each developer sets RTEMS_PREFIX once in local.cmake (gitignored).
+# First time: copy local.cmake.example -> local.cmake and edit the path.
+include(${CMAKE_SOURCE_DIR}/local.cmake OPTIONAL)
+if(NOT DEFINED RTEMS_PREFIX)
+  message(FATAL_ERROR "Missing RTEMS_PREFIX. Copy local.cmake.example to local.cmake and set your toolchain path.")
+endif()
 set(CMAKE_C_COMPILER   ${RTEMS_PREFIX}/bin/arm-rtems7-gcc)
 set(CMAKE_CXX_COMPILER ${RTEMS_PREFIX}/bin/arm-rtems7-g++)
 set(CMAKE_OBJCOPY      ${RTEMS_PREFIX}/bin/arm-rtems7-objcopy)
