@@ -8,9 +8,10 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 # Each developer sets RTEMS_PREFIX once in local.cmake (gitignored).
 # First time: copy local.cmake.example -> local.cmake and edit the path.
 include(${CMAKE_SOURCE_DIR}/local.cmake OPTIONAL)
-if(NOT DEFINED RTEMS_PREFIX)
-  message(FATAL_ERROR "Missing RTEMS_PREFIX. Copy local.cmake.example to local.cmake and set your toolchain path.")
+if(NOT DEFINED RTEMS_LOCAL_PATH)
+  message(FATAL_ERROR "Missing RTEMS_LOCAL_PATH. Copy local.cmake.example to local.cmake and set your toolchain path.")
 endif()
+set(RTEMS_PREFIX       ${RTEMS_LOCAL_PATH}/RTEMS_toolchain/rtems)
 set(CMAKE_C_COMPILER   ${RTEMS_PREFIX}/bin/arm-rtems7-gcc)
 set(CMAKE_CXX_COMPILER ${RTEMS_PREFIX}/bin/arm-rtems7-g++)
 set(CMAKE_OBJCOPY      ${RTEMS_PREFIX}/bin/arm-rtems7-objcopy)
