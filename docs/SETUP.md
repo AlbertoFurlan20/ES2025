@@ -1,32 +1,50 @@
 # Setup
 Steps for building the RTEMS toolchain and BSP for STM32F4 Discovery on macOS.
 
-## 0. Prerequisites
-- clone https://gitlab.rtems.org/rtems/rtos/rtems.git
-- clone https://gitlab.rtems.org/rtems/tools/rtems-source-builder.git rbs
+## 0. Set Target Env
+This is where the toolchain install and all the required tools will live
+```
+- Albi: /Users/albertofurlan/Developer/PoliMi
+- Tom: /Volumes/POLI/tools
+```
+```bash
+export TARGET_DIR=<replace_with_yours>
+```
 
-## 1. Brew istall texinfo 
+## 0.5 Prerequisites
+```bash
+git clone https://gitlab.rtems.org/rtems/rtos/rtems.git $TARGET_DIR/rtems
+git clone https://gitlab.rtems.org/rtems/tools/rtems-source-builder.git $TARGET_DIR/rtems-source-builder
+```
+
+## 1. Brew install texinfo 
 - this specific to avoid the texinfo manual install that does the toolchain builder
 ```bash
 brew install texinfo
 ```
 
 ## 2.  Build toolchain 32 bit version
+At the root of the cloned repo `rtems-source-builder` run the commands
 ```bash
 export PATH="$(brew --prefix texinfo)/bin:$PATH"
-./source-builder/sb-set-builder --prefix=/Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems 7/rtems-arm
+$TARGET_DIR/rtems-source-builder/source-builder/sb-set-builder --prefix=$TARGET_DIR/RTEMS_toolchain/rtems 7/rtems-arm
 ```
 
 ## 3. Add it to PATH
 ```bash
-export PATH=/Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/7/bin:$PATH
-export PATH=/Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/bin:$PATH
+cat >> ~/.bash_profile << EOF
+
+# RTEMS Toolchain                                                                          
+export PATH="$TARGET_DIR/RTEMS_toolchain/rtems/7/bin:\$PATH"
+export PATH="$TARGET_DIR/RTEMS_toolchain/rtems/bin:\$PATH"
+EOF
+source ~/.bash_profile
 ```
 
 ## 4. Verify the STM32F4 BSP
 This lists the available BSPs - you should see `arm/stm32f4` in the output.
 ```bash
-cd /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems
+cd $TARGET_DIR/rtems
 ./waf bsplist | grep stm32f4
 ```
 
@@ -41,7 +59,7 @@ EOF
 
 ## 6. Configure, build, and install
 ```bash
-./waf configure --prefix=/Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/7
+./waf configure --prefix=$TARGET_DIR/RTEMS_toolchain/rtems/7
 ./waf
 ./waf install
 ```
@@ -87,7 +105,7 @@ EOF
 arm-rtems7-gcc \
 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 -O0 -g \
--B/Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/7/arm-rtems7/stm32f4/lib/ \
+-B$TARGET_DIR/RTEMS_toolchain/rtems/7/arm-rtems7/stm32f4/lib/ \
 -qrtems \
 hello.c -o hello.exe
 ```

@@ -7,6 +7,12 @@
 *.o
 *.obj
 
+# Build directories & files
+**/build
+**/patches
+**/sources
+rsb-log-*.txt
+
 # Precompiled Headers
 *.gch
 *.pch
