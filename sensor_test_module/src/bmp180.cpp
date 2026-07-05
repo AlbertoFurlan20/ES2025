@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "bmp.h"
+#include "bmp180_ioctls.h"
 #include "bmp_regs.h"
 
 
@@ -367,7 +368,7 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
 int bmp::bmp180_selftest()
 {
     // Datasheet BST-BMP180-DS000-09, section 3.5 worked example.
-    const bmp180_calib_t cal = {
+    constexpr bmp180_calib_t cal = {
         408,    // AC1
         -72,    // AC2
         -14383, // AC3

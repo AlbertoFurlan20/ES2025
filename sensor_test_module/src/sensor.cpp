@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 
 #include "bmp.h"
+#include "bmp180_ioctls.h"
 
 /**
  * @brief Main bmp180 task that follows performs continuous sensor reading
