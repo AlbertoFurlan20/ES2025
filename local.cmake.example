@@ -1,0 +1,3 @@
+# Copy this file to local.cmake (same directory), then set your machine's path.
+# local.cmake is gitignored, so each developer keeps their own without conflicts.
+set(RTEMS_PREFIX /Users/albertofurlan/Developer/PoliMi)

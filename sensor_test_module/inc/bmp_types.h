@@ -52,10 +52,10 @@ typedef struct {
 
 
 typedef struct {
-    i2c_dev       base;
-    bmp180_calib_t calib;
-    bmp180_oss_t   oss;
-    bool           calib_loaded;
+    i2c_dev         base;
+    bmp180_calib_t  calib;
+    bmp180_oss_t    oss;
+    bool            calib_loaded;
 } bmp180_dev_t;
 
 #endif //ES2025_BMP_CONFIGS_H

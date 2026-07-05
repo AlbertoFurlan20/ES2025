@@ -57,3 +57,6 @@ rsb-log-*.txt
 
 # [Random trash]
 rtems_hello
+
+# [Local machine config]
+local.cmake
