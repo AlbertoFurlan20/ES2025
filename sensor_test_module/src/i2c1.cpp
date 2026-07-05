@@ -12,7 +12,6 @@
 #include <dev/i2c/i2c.h>
 
 #include <bspopts.h>       // STM32F4_PCLK1
-#include <cstdint>
 #include <bsp/stm32_i2c.h> // stm32f4_i2c register struct + bit defines
 #include <bsp/io.h>        // stm32f4_gpio_* + STM32F4_GPIO_AF_I2C1
 #include <bsp/rcc.h>       // stm32f4_rcc_set_clock + STM32F4_RCC_I2C1
