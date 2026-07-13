@@ -275,6 +275,7 @@ rtems_task bmp180_oss_sweep_task(const rtems_task_argument ignored)
     constexpr int N = 32;            // samples per OSS mode
     constexpr int WARMUP = 3;        // discarded settling samples
     const rtems_interval tps = rtems_clock_get_ticks_per_second();
+    const rtems_interval ticks_per_cycle = tps/BMP180_READ_FREQUENCY;
 
     printf("\n=== BMP180 OSS sweep + noise (%d samples/mode, back-to-back) ===\n", N);
     printf("OSS  mean_Pa  std_Pa  p2p_Pa  mean_degC  ms/smp\n");
@@ -365,6 +366,6 @@ rtems_task bmp180_oss_sweep_task(const rtems_task_argument ignored)
             perror("BMP180_IOCTL_READ_MEASUREMENT");
         }
 
-        rtems_task_wake_after(tps);
+        rtems_task_wake_after(ticks_per_cycle);
     }
 }

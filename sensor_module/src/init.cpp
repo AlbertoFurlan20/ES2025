@@ -77,7 +77,7 @@ rtems_task Entrypoint(rtems_task_argument ignored)
     constexpr rtems_id heartbeat_task_id = 0;
     constexpr rtems_id sensor_task_id = 0;
 
-    setupTask(heartbeat_task_id, "ALVE", 1, alive_task);
+    //setupTask(heartbeat_task_id, "ALVE", 3, alive_task);
     // OSS sweep + noise characterization, then a normal 1 Hz read loop.
     // Swap back to `bmp180_task` here for the plain reader without the sweep.
     setupTask(sensor_task_id, "SWEP", 1, bmp180_oss_sweep_task);

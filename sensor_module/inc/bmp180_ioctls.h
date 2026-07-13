@@ -10,6 +10,7 @@
 
 #define BMP180_I2C_ADDR         0x77u
 #define BMP180_CHIP_ID_VALUE    0x55u
+#define BMP180_READ_FREQUENCY   10    //Hz
 
 
 /**
