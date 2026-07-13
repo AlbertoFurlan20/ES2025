@@ -53,4 +53,4 @@ include_directories(
 
 # Add each module as a subdirectory
 add_subdirectory("communication_test_module")
-add_subdirectory("sensor_test_module")
+add_subdirectory("sensor_module")

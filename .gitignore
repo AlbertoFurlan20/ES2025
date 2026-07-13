@@ -60,3 +60,4 @@ rtems_hello
 
 # [Local machine config]
 local.cmake
+**/*.env
