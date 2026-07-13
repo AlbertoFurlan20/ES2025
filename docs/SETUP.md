@@ -53,9 +53,12 @@ cd $TARGET_DIR/rtems
 cat > config.ini << 'EOF'
 [arm/stm32f4]
 BUILD_TESTS = True
-# BSP_CONSOLE_BAUD = 115200 -- This throws "Unknown configuration option: BSP_CONSOLE_BAUD" 
+# BSP_CONSOLE_BAUD = 115200 -- This throws "Unknown configuration option: BSP_CONSOLE_BAUD"
+STM32F4_ENABLE_USART_2 = True
+STM32F4_ENABLE_USART_3 = False
 EOF
 ```
+Console UART wired to PA2 (TX) / PA3 (RX) = USART2 (see `PIN_CONFIG.md`). Without this override the BSP defaults to USART3, and console output silently goes nowhere.
 
 ## 6. Configure, build, and install
 ```bash
