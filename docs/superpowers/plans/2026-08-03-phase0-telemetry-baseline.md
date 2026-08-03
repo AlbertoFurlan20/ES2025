@@ -1790,7 +1790,7 @@ def plot_temperature(session: Session, ax=None):
     ax.set_ylabel("temperature [degC]")
 
     drift = metrics.temperature_drift(session)
-    ax.set_title(f"Temperature (drift {drift['cdeg_per_min'] / 10.0:+.3f} degC/min)")
+    ax.set_title(f"Temperature (drift {drift['degc_per_min']:+.3f} degC/min)")
     return ax
 
 
