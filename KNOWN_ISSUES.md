@@ -427,6 +427,38 @@ which is precisely the kind of defect that hides in an untested teardown path.
 `memset(&dev->calib, 0, sizeof(dev->calib))` clears already-zero memory.
 Harmless, but it implies a guarantee the caller has not actually checked.
 
+### I17b — `temperature_cdeg` is a misnomer
+
+`C_src/inc/bmp_types.h:49`
+
+```c
+int32_t  temperature_cdeg;   /* Temperature [steps of 0.1°C] */
+```
+
+The name says centi-degrees; the comment and the value say deci-degrees. The
+comment is correct — datasheet Table 1 gives 0.1 °C resolution — so the name is
+wrong by a factor of ten.
+
+Found during Phase 0: it produced a real unit bug in the host tooling, where a
+drift metric came out 10× off. `E_analysis/metrics.py` now absorbs the
+conversion so no consumer has to know, but the field itself should be renamed
+`temperature_ddeg` (or the value scaled) so the trap stops existing. Renaming
+touches the ioctl payload struct, so it is a breaking change — batch it with
+[I9](#i9--read_measurement-is-declared-_iow-but-writes-back-to-the-caller).
+
+### I17c — Target build does not pin the C++ standard
+
+`C_src/compile.sh:13-19`, `C_src/Makefile:8-16`
+
+Neither passes `-std=`. The code uses C++17 features — `if` with initializer in
+`telemetry.cpp` and structured bindings in `sensor.cpp` — and compiles only
+because this `arm-rtems7-g++` happens to default to `gnu++17`.
+
+`CMakeLists.txt:25` sets `CMAKE_CXX_STANDARD 17` and `C_src/tests/Makefile` sets
+`-std=c++17`, so two of the four build paths pin it and two do not. An older
+toolchain would break the unpinned pair with confusing syntax errors. Fix
+alongside [I3](#i3--three-divergent-toolchain-path-mechanisms).
+
 ### I17 — Header guard style is inconsistent
 
 `C_src/inc/constants.h:1` uses `#pragma once`; the other four headers use
@@ -448,7 +480,7 @@ live in `bmp180_task_manual`. Either wire it in and test it, or delete it.
 | Section | High | Medium | Low | Total |
 |---------|------|--------|-----|-------|
 | BUGS | 4 | 5 | 5 | 14 |
-| IMPROVEMENTS | 4 | 7 | 7 | 18 |
+| IMPROVEMENTS | 4 | 7 | 9 | 20 |
 
 Of the 14 bugs, **6 are on the live boot path** (B1, B6, B7, B8, B9, B11) and
 8 are latent in unwired code — 3 of which ([B2](#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent),
