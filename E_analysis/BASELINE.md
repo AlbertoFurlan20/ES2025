@@ -54,15 +54,27 @@ the UART rather than the sensor.
 
 ## Results
 
-**Run 2** (`fw=1.1.0`, the current reference):
+Use **`per_block_summary()`**, not `per_oss_summary()`, for anything comparing
+modes. The profile visits `oss=2` twice — a 10 s sweep block and a 111 s
+continuous block — and pooling them lets 111 s of real atmospheric drift inflate
+the noise figure for that one mode. Pooled, `oss=2` reads 4.93 Pa; the comparable
+sweep block is 4.82 Pa, and in run 1 the distortion is larger still (4.71 pooled
+vs 5.53 sweep-only). `per_block_summary()` reports `span_s` per block precisely so
+this is visible rather than silent.
+
+**Run 2** (`fw=1.1.0`, the current reference), per contiguous block:
 
 ```
- oss     n       mean_pa   rms_pa  p2p_pa  datasheet_rms_pa  read_freq_hz  median_interval_us  jitter_std_us
-   0   500  101701.816000 5.626912      33               6.0     90.917356             10999.0       0.467866
-   1   500  101699.204000 4.678289      27               5.0     71.433674             13999.0       0.332134
-   2  6076  101699.518269 4.934145      32               4.0     50.002500             19999.0       0.433060
-   3   500  101702.424000 3.964369      23               3.0     31.251953             31998.0       0.000000
+ block  oss    n     span_s       mean_pa   rms_pa  p2p_pa  datasheet_rms_pa  median_interval_us
+     0    0  500   5.488657 101701.816000 5.626912      33               6.0             10999.0
+     1    1  500   6.985564 101699.204000 4.678289      27               5.0             13999.0
+     2    2  500   9.979376 101703.114000 4.824210      24               4.0             19999.0
+     3    3  500  15.967002 101702.424000 3.964369      23               3.0             31998.0
+     4    2 5576 111.493031 101699.195839 4.814421      32               4.0             19999.0
 ```
+
+Block 4 is the continuous run and is **not** comparable with blocks 0–3; it is
+the source for drift and long-term stability, not for mode-to-mode noise.
 
 Temperature drift: **+0.189 °C/min**, span 0.4 °C (Run 1: +0.019 °C/min, span
 0.2 °C). The two runs differ by an order of magnitude, so drift at this duty
@@ -79,12 +91,14 @@ Figures: `figures/baseline/`.
 
 Side by side:
 
-| oss | rms Run 1 | rms Run 2 | p2p Run 1 | p2p Run 2 | interval (both) | jitter (both) |
-|-----|-----------|-----------|-----------|-----------|-----------------|---------------|
-| 0 | 5.30 | 5.63 | 36 | 33 | 10999 µs | 0.468 µs |
-| 1 | **5.70** | 4.68 | 28 | 27 | 13999 µs | 0.332 µs |
-| 2 | 4.71 | **4.93** | **35** | **32** | 19999 µs | 0.433 µs |
-| 3 | 3.95 | 3.96 | 21 | 23 | 31998 µs | 0.000 µs |
+Sweep blocks only (n = 500 each), so the two runs are directly comparable:
+
+| oss | rms Run 1 | rms Run 2 | datasheet | interval (both) | jitter (both) |
+|-----|-----------|-----------|-----------|-----------------|---------------|
+| 0 | 5.305 | 5.627 | 6.0 | 10999 µs | 0.468 µs |
+| 1 | **5.698** | 4.678 | 5.0 | 13999 µs | 0.332 µs |
+| 2 | 5.525 | **4.824** | 4.0 | 19999 µs | 0.433 µs |
+| 3 | 3.947 | 3.964 | 3.0 | 31998 µs | 0.000 µs |
 
 `median_interval_us` and `jitter_std_us` are **bit-identical across the two
 runs**. Acquisition timing is fully deterministic and tick-quantised. Noise, by
@@ -98,17 +112,29 @@ predicts `rtems_task_wake_after` can return up to one tick early, so a read
 occasionally lands before the conversion completes and returns the *previous*
 result. Predicted symptom: noise fails to fall cleanly with oversampling.
 
-**Both runs show non-monotonic noise, at different mode transitions:**
+Each oversampling step should cut RMS noise by about 1.0 Pa. Per-transition,
+against a standard error of `s/sqrt(2(n-1))` ≈ 0.17 Pa at n = 500:
 
-- Run 1: `rms` rises 0→1 (5.30 → 5.70).
-- Run 2: `rms` rises 1→2 (4.68 → 4.93).
-- Both runs: `p2p` at OSS2 exceeds OSS1 (35 > 28; 32 > 27).
+| Transition | Run 1 observed | z vs expected | Run 2 observed | z vs expected |
+|------------|----------------|---------------|----------------|---------------|
+| 0 → 1 | **+0.393** | **+5.65** | −0.949 | +0.22 ✓ |
+| 1 → 2 | −0.173 | +3.29 | **+0.146** | **+5.39** |
+| 2 → 3 | −1.578 | −2.69 | −0.860 | +0.71 ✓ |
 
-More oversampling producing more noise is physically backwards. That it lands on
-a *different* transition each run is the strongest part of the evidence: a
-stochastic stale-sample effect randomises which mode it spoils, whereas a fixed
-cause — a miswired pull-up, a bad OSS control byte, a arithmetic error — would
-degrade the same mode every time.
+**In each run exactly one transition fails at ~5.4σ, and it is a different one
+each time.** Run 1 breaks at 0→1; run 2 at 1→2. Equally telling, the transitions
+that are *not* spoiled match the datasheet almost exactly (run 2: z = +0.22 and
++0.71) — the sensor is demonstrably capable of meeting specification, and
+something intermittently prevents it.
+
+That asymmetry is the argument. A systematic cause — a miswired pull-up, a bad
+OSS control byte, an arithmetic error — would degrade the same mode every run.
+Only a stochastic cause moves. An intermittent stale read is exactly that:
+whether a sample is spoiled depends on where the wake-up lands inside the current
+tick, which is uncorrelated with the oversampling setting.
+
+Full derivation and the ruled-out alternatives:
+[`../A_report/fragments/02-conversion-timing-defect-evidence.md`](../A_report/fragments/02-conversion-timing-defect-evidence.md).
 
 The mechanism is visible in the interval column. Measured medians of 11.0 / 14.0
 / 20.0 / 32.0 ms sit against tick sums of 10 / 13 / 19 / 31 ms plus about 1 ms

@@ -85,7 +85,17 @@ def jitter_us(session: Session, oss: int) -> dict:
 
 
 def pressure_noise(session: Session, oss: int) -> dict:
-    """Mean, RMS deviation and peak-to-peak pressure for one OSS block."""
+    """Mean, RMS deviation and peak-to-peak pressure, POOLED over one setting.
+
+    .. warning::
+       This pools every block at this setting. If a capture visits the same
+       setting twice — as the standard sweep-then-continuous profile does for
+       oss=2 — the longer block contributes real atmospheric drift, inflating
+       ``rms_pa`` for that setting alone and making it look noisier than its
+       neighbours for reasons that have nothing to do with the sensor.
+
+       Use :func:`per_block_summary` for any mode-to-mode comparison.
+    """
     block = _block(session, oss)
     if block.empty:
         return {"mean_pa": math.nan, "rms_pa": math.nan, "p2p_pa": math.nan, "n": 0}
@@ -127,6 +137,53 @@ def temperature_drift(session: Session) -> dict:
         "degc_per_min": slope_units_per_s * 60.0 / 10.0,
         "span_degc": float(samples.t_cdeg.max() - samples.t_cdeg.min()) / 10.0,
     }
+
+
+def blocks(session: Session):
+    """Yield (block_index, oss, frame) for each contiguous run of one setting.
+
+    A capture visits oss=2 twice — once in the sweep, once in the continuous
+    phase — and those two runs are not comparable: the continuous one spans two
+    orders of magnitude more wall time and therefore carries real atmospheric
+    drift on top of sensor noise. Anything comparing modes to each other must
+    work per block, not per oss value.
+    """
+    samples = session.samples
+    if samples.empty:
+        return
+
+    run_id = (samples.oss != samples.oss.shift()).cumsum()
+    for index, (_, frame) in enumerate(samples.groupby(run_id, sort=True)):
+        yield index, int(frame.oss.iloc[0]), frame
+
+
+def per_block_summary(session: Session) -> pd.DataFrame:
+    """One row per contiguous block. Use this to compare oversampling modes.
+
+    Prefer this over per_oss_summary() for noise comparisons: it never mixes two
+    separate visits to the same setting, and it exposes each block's wall-clock
+    span so drift contamination is visible rather than silent.
+    """
+    rows = []
+    for index, oss, frame in blocks(session):
+        span_s = float(frame.t_us.iloc[-1] - frame.t_us.iloc[0]) / 1_000_000.0
+        intervals = frame.t_us.diff().dropna()
+        rows.append(
+            {
+                "block": index,
+                "oss": oss,
+                "n": int(len(frame)),
+                "span_s": span_s,
+                "mean_pa": float(frame.p_pa.mean()),
+                "rms_pa": float(frame.p_pa.std(ddof=0)),
+                "p2p_pa": int(frame.p_pa.max() - frame.p_pa.min()),
+                "datasheet_rms_pa": DATASHEET_RMS_PA.get(oss, math.nan),
+                "median_interval_us": float(intervals.median())
+                if not intervals.empty
+                else math.nan,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def per_oss_summary(session: Session) -> pd.DataFrame:

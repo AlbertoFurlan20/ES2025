@@ -68,15 +68,17 @@ corrupts the noise figures the OSS sweep task is built to measure — inflated
 **Fix direction:** add one tick of margin to each constant, or poll the SCO bit
 (see [I5](#i5--poll-the-sco-bit-instead-of-sleeping-a-fixed-time)).
 
-> **Confirmed on hardware, v1.1.0 baseline.** Two independent 150 s captures both
-> show non-monotonic pressure noise — run 1 rises across the 0→1 transition
-> (5.30 → 5.70 Pa), run 2 across 1→2 (4.68 → 4.93 Pa) — and `p2p_pa` at OSS2
-> exceeds OSS1 in both. That it lands on a *different* transition each run is the
-> strongest part of the evidence: a stochastic stale-sample effect randomises
-> which mode it spoils, whereas a fixed cause would degrade the same mode every
-> time. Jitter stays below 0.5 µs in every mode, ruling out the scheduler and
-> isolating the defect to the conversion wait. Full numbers and the six R2
-> acceptance criteria: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
+> **Confirmed on hardware, v1.1.0 baseline.** Two independent 150 s captures. Each
+> oversampling step should cut RMS noise ~1.0 Pa; in each run **exactly one
+> transition fails at ~5.4σ, and a different one each time** — run 1 at 0→1
+> (+0.393 Pa observed, z = +5.65), run 2 at 1→2 (+0.146 Pa, z = +5.39). The
+> unspoiled transitions match the datasheet closely (run 2: z = +0.22, +0.71), so
+> the sensor can meet spec and something intermittently stops it. A systematic
+> cause would spoil the same mode every run; only a stochastic one moves. Jitter
+> below 0.5 µs and zero dropped records rule out the scheduler and telemetry
+> back-pressure respectively. Derivation:
+> [`A_report/fragments/02-conversion-timing-defect-evidence.md`](A_report/fragments/02-conversion-timing-defect-evidence.md).
+> Numbers and R2 criteria: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
 
 ### B2 — `bmp180_task_manual` passes the device path as the bus path [latent]
 

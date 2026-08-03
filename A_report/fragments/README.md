@@ -13,6 +13,7 @@ conversion.
 | Fragment | Feeds report section |
 |----------|----------------------|
 | [01-temperature-decoupling-rationale.md](01-temperature-decoupling-rationale.md) | Design and implementation |
+| [02-conversion-timing-defect-evidence.md](02-conversion-timing-defect-evidence.md) | Design and implementation; Problems encountered |
 
 ## Conventions
 

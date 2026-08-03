@@ -155,3 +155,46 @@ def test_intervals_split_discontiguous_runs_of_same_oss():
     # The 900000-41000 gap must NOT appear.
     assert sorted(intervals) == [20000, 20000]
     assert metrics.jitter_us(session, oss=2)["std_us"] == pytest.approx(0.0)
+
+
+def test_per_block_summary_separates_repeat_visits():
+    """oss=2 visited twice must produce two rows, not one pooled row.
+
+    The standard capture profile sweeps 0-3 then returns to oss=2 for a long
+    continuous run. Pooling those two visits mixes a 10 s block with a 100 s one,
+    so the longer block's atmospheric drift inflates the noise figure for that
+    mode alone. Regression test for a confound that made the v1.0.0 baseline
+    report 4.71 Pa at oss=2 where the comparable sweep block was 5.53 Pa.
+    """
+    S = 1_000_000  # timestamps are microseconds
+    rows = (
+        # Short sweep block: 4 samples over 3 s, tight.
+        [f"S {i * S} 244 {100 + (i % 3)} 2" for i in range(4)]
+        # Detour to another setting.
+        + [f"S {(10 + i) * S} 244 {200 + i * 50} 3" for i in range(4)]
+        # Second visit to oss=2: 4 samples over 90 s, drifting hard.
+        + [f"S {(100 + i * 30) * S} 244 {300 + i * 90} 2" for i in range(4)]
+    )
+    summary = metrics.per_block_summary(build(rows))
+
+    assert list(summary.oss) == [2, 3, 2]
+    assert list(summary.block) == [0, 1, 2]
+
+    first, third = summary.iloc[0], summary.iloc[2]
+    # Same setting, wildly different noise - because the third block drifts.
+    assert first.rms_pa < third.rms_pa
+    # span_s exposes why, so the contamination is visible rather than silent.
+    assert first.span_s == pytest.approx(3.0)
+    assert third.span_s == pytest.approx(90.0)
+
+
+def test_per_oss_summary_still_pools_by_design():
+    """per_oss_summary keeps pooling; the caveat is documented, not enforced."""
+    rows = (
+        [f"S {i * 1000} 244 100 2" for i in range(3)]
+        + [f"S {10000 + i * 1000} 244 100 3" for i in range(3)]
+        + [f"S {90000 + i * 1000} 244 100 2" for i in range(3)]
+    )
+    summary = metrics.per_oss_summary(build(rows))
+    assert list(summary.oss) == [2, 3]
+    assert int(summary[summary.oss == 2].n.iloc[0]) == 6
