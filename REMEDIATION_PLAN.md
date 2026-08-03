@@ -18,23 +18,26 @@ entirely; it belongs to a `2.0.0`.
 
 ---
 
-## Baseline (before any edit)
+## Phase 0 — Instrumented baseline (before any edit)
 
-Flash the current build and capture the console output verbatim to a file. This
-is the reference every later gate compares against — without it, R2 cannot be
-shown to have improved anything.
+Superseded the original "capture the console text" step. Rather than eyeballing
+four summary rows, v1.0.0 is instrumented with the structured telemetry stream
+and a real dataset is captured, so every later gate is a numerical comparison
+instead of a judgement call.
 
-```bash
-cd C_src && ./flash.sh
-screen /dev/cu.usbserial-0001 115200   # capture the OSS sweep table
-```
+**Plan:** [`docs/superpowers/plans/2026-08-03-phase0-telemetry-baseline.md`](docs/superpowers/plans/2026-08-03-phase0-telemetry-baseline.md)
+**Design:** [`B_docs/TELEMETRY_DESIGN.md`](B_docs/TELEMETRY_DESIGN.md)
 
-Record: the four sweep rows (`mean_Pa`, `std_Pa`, `p2p_Pa`, `ms/smp`) and the
-selftest PASS line.
+The measurement path is untouched in this phase — only reporting is replaced.
+The deliverable is `E_analysis/BASELINE.md` plus the raw captures.
 
 **Expected in the baseline:** `p2p_Pa` that does *not* fall cleanly with rising
 OSS. That is the [B1](KNOWN_ISSUES.md#b1--conversion-wait-can-expire-before-the-conversion-finishes-live)
 signature, and it is what R2 has to remove.
+
+> Because Phase 0 replaces the sweep's on-device statistics with raw sample
+> emission, the R2/R3 gates below are now evaluated with
+> `metrics.per_oss_summary()` rather than by reading the old printed table.
 
 ---
 
