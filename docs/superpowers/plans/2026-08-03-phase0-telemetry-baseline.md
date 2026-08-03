@@ -73,7 +73,7 @@ The ring buffer and formatters are deliberately split from `telemetry.cpp` so th
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `telem_kind` enum (`TELEM_SAMPLE`, `TELEM_ERROR`, `TELEM_DROP`); `struct telem_rec_t { uint64_t t_us; int32_t t_cdeg; int32_t p_pa; int32_t aux; uint8_t oss; uint8_t kind; }`; `template <uint32_t N> class TelemRing` with `bool push(const telem_rec_t&)`, `bool pop(telem_rec_t&)`, `uint32_t take_dropped()`, `uint32_t capacity() const`.
+- Produces: `telem_kind` enum (`TELEM_SAMPLE`, `TELEM_ERROR`, `TELEM_DROP`); `struct telem_rec_t { uint64_t t_us; int32_t t_cdeg; int32_t p_pa; int32_t aux; uint8_t oss; uint8_t kind; }`; `template <uint32_t N> class TelemRing` with `bool push(const telem_rec_t&)`, `bool pop(telem_rec_t&)`, `uint32_t take_dropped()`, `static constexpr uint32_t capacity() noexcept`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -230,7 +230,13 @@ clean:
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `make -C C_src/tests test_telem_ring`
-Expected: FAIL with `fatal error: telem_ring.h: No such file or directory`
+Expected: FAIL with `make: *** No rule to make target '../inc/telem_ring.h', needed by 'test_telem_ring'.  Stop.`
+
+The header is listed as a prerequisite of the binary, so make aborts before it
+ever invokes the compiler. To see the underlying compiler error instead, run
+`c++ -std=c++17 -I../inc C_src/tests/test_telem_ring.cpp` directly, which gives
+`fatal error: 'telem_ring.h' file not found`. Either way the step is red for the
+right reason.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -472,7 +478,8 @@ int main()
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `make -C C_src/tests test_telem_fmt`
-Expected: FAIL with `fatal error: telem_fmt.h: No such file or directory`
+Expected: FAIL with `make: *** No rule to make target '../inc/telem_fmt.h', needed by 'test_telem_fmt'.  Stop.`
+(same prerequisite behaviour as Task 1 Step 2)
 
 - [ ] **Step 3: Write minimal implementation**
 

@@ -63,3 +63,13 @@ rtems_hello
 # [Local machine config]
 local.cmake
 **/*.env
+
+# [Host unit-test binaries — sources keep their .cpp extension]
+C_src/tests/test_*
+!C_src/tests/test_*.cpp
+*.dSYM/
+
+# [Python analysis tooling]
+**/.venv
+__pycache__/
+.pytest_cache/
