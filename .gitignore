@@ -39,6 +39,7 @@ rsb-log-*.txt
 *.lib
 
 # Executables
+**/out
 *.exe
 *.out
 *.app
