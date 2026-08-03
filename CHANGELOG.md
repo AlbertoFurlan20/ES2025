@@ -149,6 +149,8 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
 
 ### Known limitations
 
+Scope limits of the 1.0.0 design are listed below.
+
 - Only the sequences the BMP180 needs are implemented in the I2C bus driver:
   7-bit addressing, polled transfers, standard-mode 100 kHz. 10-bit addressing,
   fast mode, interrupt/DMA transfers and the `I2C_M_NOSTART` / `I2C_M_TEN` flags
