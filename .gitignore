@@ -11,6 +11,7 @@
 **/build
 **/patches
 **/sources
+**/cmake-build-debug
 rsb-log-*.txt
 
 # Precompiled Headers
