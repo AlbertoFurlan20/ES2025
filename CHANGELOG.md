@@ -5,6 +5,101 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-04
+
+Instrumentation release. Adds a structured measurement stream and host-side
+analysis tooling, producing the reference dataset that later remediation is
+measured against.
+
+**The measurement path is unchanged.** `bmp180_do_measurement`,
+`bmp180_read_ut`, `bmp180_read_up`, `bmp180_compensate`, all of `i2c1.cpp`, and
+every timing constant in `bmp_regs.h` are byte-for-byte as in 1.0.0. Only
+reporting was replaced. This was deliberate: the point of the release is to
+measure 1.0.0 honestly, not to improve it.
+
+Design: [`B_docs/TELEMETRY_DESIGN.md`](B_docs/TELEMETRY_DESIGN.md).
+Results: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
+
+### Added
+
+- **Telemetry wire format, frozen at `v1`** — line-oriented text over the
+  existing USART2 console. `S` samples, `E` errors, `D` dropped-record markers,
+  plus a session header carrying schema, firmware and temperature interval.
+  Stability contract: a tag never changes meaning, new fields append only at
+  end-of-line, and parsers ignore unknown tags and unknown trailing fields.
+- **Lock-free SPSC ring buffer** (`C_src/inc/telem_ring.h`) decoupling
+  acquisition from emission. The acquisition task timestamps and pushes in O(1)
+  and never blocks; a lower-priority emitter task formats and writes. On
+  overflow the *new* record is dropped and counted — queued records are never
+  overwritten, so surviving data stays contiguous in time. Deliberately free of
+  RTEMS dependencies so it is unit-testable on the host.
+- **Integer formatters** (`C_src/inc/telem_fmt.h`). The emitter uses no
+  `printf`: newlib-nano configurations silently mis-format `%llu`, and 64-bit
+  microsecond timestamps need to be exact. Each line is assembled into a buffer
+  and issued as a single `write()`.
+- **Emitter task** (`C_src/src/telemetry.cpp`) with drop reporting. Timestamps
+  come from `rtems_clock_get_uptime_nanoseconds()`, which reads the hardware
+  timecounter and so resolves finer than the 1 ms tick.
+- **Host unit tests** (`C_src/tests/`) for the ring and formatters, compiled
+  with the host compiler under `-Wall -Wextra`. Covers FIFO order, wraparound,
+  overflow accounting, and the `INT32_MIN` negation trap.
+- **Python analysis package** (`E_analysis/`) split three ways so metrics are
+  testable without hardware or a display: `parse.py` (text → DataFrames),
+  `metrics.py` (DataFrames → numbers), `plot.py` (numbers → charts). Derives
+  achieved read frequency, jitter, RMS pressure noise against the datasheet
+  Table 3 reference, altitude via datasheet §3.6, temperature drift and loss
+  accounting. 22 tests.
+- **Serial capture tooling** (`E_analysis/capture.py`, `capture.sh`) which
+  pulses the target reset over the ST-Link, so a run begins at the session
+  header without pressing the board's B2 button.
+- **`E_analysis/BASELINE.md`** — two 150 s captures, 7573 and 7576 samples, zero
+  drops, with six explicit R2 acceptance criteria.
+
+### Changed
+
+- `bmp180_oss_sweep_task` replaced by `bmp180_telemetry_task`, which emits raw
+  records instead of computing statistics on the device. Mean, standard
+  deviation, peak-to-peak and achieved rate are now derived host-side, where
+  they can be recomputed without reflashing and where the derivation is itself
+  under test.
+- `setupTask` takes an explicit stack size. Both new tasks get 4 KB rather than
+  `RTEMS_MINIMUM_STACK_SIZE`; acquisition runs at priority 2, above the emitter
+  at 5, so the console can never delay a measurement.
+- `CONFIGURE_MAXIMUM_TASKS` raised from 4 to 6.
+- `C_src/Makefile` toolchain paths no longer hardcode one developer's home
+  directory.
+
+### Removed
+
+- `isqrt32` and the on-device statistics it supported, superseded by
+  `E_analysis/metrics.py`.
+
+### Fixed
+
+- `E_analysis/capture.sh` originally used `stty -f` followed by `cat`. On macOS,
+  termios settings applied to a `/dev/cu.*` node are reset when the port is
+  opened, so captures recorded framing garbage at the driver's default baud. It
+  also used `timeout(1)`, which macOS does not ship. Both replaced by
+  `capture.py`, which applies termios to an already-open descriptor.
+- `metrics.intervals_us` filtered samples by oversampling *value* rather than by
+  contiguous *run*. Because `oss=2` appears both in the sweep and in the
+  continuous phase, it took an interval straight across the intervening `oss=3`
+  block: reported jitter for that mode was 206533 µs against a true 0.43 µs.
+
+### Findings
+
+The baseline confirms
+[B1](KNOWN_ISSUES.md#b1--conversion-wait-can-expire-before-the-conversion-finishes-live)
+is real and reproducible. Pressure noise fails to fall monotonically with
+oversampling in both runs, at *different* mode transitions — the randomness that
+a stochastic stale-sample effect predicts and that a fixed cause would not
+produce. Timing is meanwhile fully deterministic: median intervals and jitter
+are bit-identical across runs, and jitter stays below 0.5 µs, which rules out
+the scheduler and isolates the defect to the conversion wait.
+
+Two new issues were recorded during implementation: `temperature_cdeg` is a
+misnomer holding deci-degrees (I17b), and no target build pins `-std=` (I17c).
+
 ## [1.0.0] - 2026-08-03
 
 First complete release: a working RTEMS 7 device driver for the Bosch BMP180
@@ -162,4 +257,5 @@ work tracked against this release, see [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.1.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.1.0
 [1.0.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.0.0

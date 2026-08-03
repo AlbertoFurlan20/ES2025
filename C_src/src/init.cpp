@@ -79,7 +79,7 @@ rtems_task Entrypoint(rtems_task_argument ignored)
     constexpr rtems_id emitter_task_id = 0;
 
     // Session header goes out synchronously, before any record can be emitted.
-    telem_emit_header("1.0.0", 0);
+    telem_emit_header("1.1.0", 0);
 
     // Acquisition runs at higher priority (lower number) than emission, so the
     // console can never delay a measurement. The emitter gets the CPU during the

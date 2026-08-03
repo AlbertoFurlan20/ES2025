@@ -1,5 +1,41 @@
 # Phase 0 — Telemetry Instrumentation of v1.0.0 Implementation Plan
 
+> ## ✅ COMPLETED — 2026-08-04, shipped as v1.1.0
+>
+> All ten tasks executed. Retained as a record rather than deleted, because the
+> defect log below is the useful part: it is evidence of what a written plan
+> does and does not catch.
+>
+> - **Outcome:** [`E_analysis/BASELINE.md`](../../../E_analysis/BASELINE.md) —
+>   two 150 s captures, 7573 and 7576 samples, zero drops. B1 confirmed.
+> - **Release notes:** [`CHANGELOG.md`](../../../CHANGELOG.md) §1.1.0.
+> - **As-built design:** [`B_docs/TELEMETRY_DESIGN.md`](../../../B_docs/TELEMETRY_DESIGN.md).
+>
+> The unchecked `- [ ]` boxes below are left as written. They record the plan as
+> handed to implementers, not the final state of the tree; the commits are the
+> record of what was done.
+>
+> ### Defects found in this plan during execution
+>
+> Six, all authored into the plan, none caught by writing it:
+>
+> | # | Defect | Found by |
+> |---|--------|----------|
+> | 1 | Step 2 predicted a compiler error, but `make` aborts earlier on the missing header prerequisite | Task 1–2 agent |
+> | 2 | `capacity()` documented as a const instance method; actually `static constexpr` | Task 1–2 agent |
+> | 3 | Host test binaries are extensionless, so no `.gitignore` rule caught them | Task 1–2 agent |
+> | 4 | `test_altitude_matches_datasheet_gradient` asserted the datasheet's *prose* 8.43 m/hPa against the datasheet's own *formula*, whose gradient is 8.329 | Task 7–8 agent |
+> | 5 | `temperature_drift` returned raw units while the test expected degrees — `temperature_cdeg` holds deci-degrees despite its name | Task 7–8 agent |
+> | 6 | `capture.sh` used `stty -f` + `cat` (termios does not stick on macOS `/dev/cu.*`) and `timeout(1)` (absent on macOS) | first hardware run |
+>
+> A seventh escaped the plan entirely and was caught only by running against real
+> data: `metrics.intervals_us` filtered by oss *value* rather than contiguous
+> *run*, reporting 206533 µs of jitter against a true 0.43 µs. The plan's own
+> test covered two blocks of *different* oss but never the same oss twice.
+>
+> Defects 1–5 were reported rather than worked around, which is why they are
+> visible here at all.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Instrument the unmodified v1.0.0 driver so it emits a structured, parseable measurement stream, and build the host tooling to turn that stream into metrics — producing a baseline dataset against which all later remediation is measured.
