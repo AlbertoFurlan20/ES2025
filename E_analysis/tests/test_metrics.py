@@ -129,3 +129,29 @@ def test_per_oss_summary_shape():
 def test_empty_oss_block_is_safe():
     session = build(["S 0 244 96820 0"])
     assert math.isnan(metrics.read_freq_hz(session, oss=3))
+
+
+def test_intervals_split_discontiguous_runs_of_same_oss():
+    """The same oss can appear in several separate runs.
+
+    A sweep visits oss=2 and the continuous phase afterwards returns to it. A
+    delta taken across the intervening oss=3 block is the length of that detour,
+    not a cycle time, and would wreck the jitter figure. Regression test for a
+    real defect seen in the v1.0.0 baseline capture, where jitter_std_us for
+    oss=2 read 206533 us against a true value near zero.
+    """
+    session = build(
+        [
+            "S 1000 244 96820 2",
+            "S 21000 244 96820 2",
+            "S 41000 244 96820 3",   # detour to another mode
+            "S 73000 244 96820 3",
+            "S 900000 244 96820 2",  # back to oss=2, long gap
+            "S 920000 244 96820 2",
+        ]
+    )
+    intervals = metrics.intervals_us(session, oss=2)
+    # Two runs of two samples each -> one delta per run, both 20000 us.
+    # The 900000-41000 gap must NOT appear.
+    assert sorted(intervals) == [20000, 20000]
+    assert metrics.jitter_us(session, oss=2)["std_us"] == pytest.approx(0.0)

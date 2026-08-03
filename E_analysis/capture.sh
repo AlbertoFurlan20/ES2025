@@ -2,17 +2,25 @@
 # Capture a telemetry run to a timestamped file.
 #
 # Usage: ./capture.sh [seconds] [device]
-# Reset the board (black B2 button) right after this starts.
+#
+# Thin wrapper over bmp180_analysis/capture.py rather than a `stty` + `cat`
+# pipeline, for two reasons found on real hardware:
+#
+#   1. On macOS, termios settings applied to a /dev/cu.* node with `stty -f` are
+#      reset when the port is opened, so `cat` reads at the driver default baud
+#      and records framing garbage. capture.py applies them to an already-open
+#      descriptor and holds it for the whole run.
+#   2. macOS ships no `timeout(1)`.
+#
+# By default the target is reset over the ST-Link once the port is already
+# draining, so the capture begins at the session header and nobody has to press
+# the board's B2 button. Set NO_RESET=1 to capture a board that is already running.
 
 set -e
 
 DURATION="${1:-120}"
 DEVICE="${2:-/dev/cu.usbserial-0001}"
-OUT_DIR="$(dirname "$0")/captures"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT="$OUT_DIR/$STAMP.log"
-
-mkdir -p "$OUT_DIR"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [ ! -e "$DEVICE" ]; then
     echo "No such device: $DEVICE" >&2
@@ -21,17 +29,17 @@ if [ ! -e "$DEVICE" ]; then
     exit 1
 fi
 
-# The device has no RTC, so record the host wall-clock start alongside the
-# capture. Device timestamps are monotonic microseconds since ITS boot; absolute
-# time is this value plus the device timestamp.
-echo "# capture_start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT"
+PY="$HERE/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+    PY="$(command -v python3)"
+fi
 
-stty -f "$DEVICE" 115200 cs8 -cstopb -parenb raw
+RESET_ARGS=()
+if [ -z "$NO_RESET" ]; then
+    RESET_ARGS=(--reset-from "$HERE/../C_src")
+fi
 
-echo "Capturing $DURATION s from $DEVICE -> $OUT"
-echo "Press the black B2 reset button now."
-
-timeout "$DURATION" cat "$DEVICE" >> "$OUT" || true
-
-echo "Done. $(grep -c '^S ' "$OUT" || true) samples captured."
-echo "$OUT"
+cd "$HERE"
+exec "$PY" -m bmp180_analysis.capture "$DURATION" \
+    --device "$DEVICE" \
+    "${RESET_ARGS[@]}"

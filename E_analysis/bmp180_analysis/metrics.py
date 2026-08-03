@@ -31,15 +31,31 @@ def _block(session: Session, oss: int) -> pd.DataFrame:
 
 
 def intervals_us(session: Session, oss: int) -> pd.Series:
-    """Inter-sample intervals within one OSS block.
+    """Inter-sample intervals for one OSS setting.
 
-    Deltas are taken only within the block, so the gap spanning the mode change
-    and its warm-up samples never appears - that gap is not a cycle time.
+    Deltas are taken only within a CONTIGUOUS run of samples at this setting.
+    The same oss value can appear in several separate runs - the sweep visits
+    oss=2, and the continuous phase afterwards returns to it - and a delta taken
+    across the intervening runs is not a cycle time but the length of the whole
+    detour. Splitting on contiguity also drops the mode-change-plus-warm-up gap
+    at each run's start, which is the same class of artefact.
     """
-    block = _block(session, oss)
-    if len(block) < 2:
+    samples = session.samples
+    if samples.empty:
         return pd.Series(dtype="int64")
-    return block.t_us.diff().dropna().astype("int64")
+
+    # Label maximal runs of identical oss, then keep only this setting's runs.
+    run_id = (samples.oss != samples.oss.shift()).cumsum()
+
+    out: list[pd.Series] = []
+    for _, run in samples[samples.oss == oss].groupby(run_id, sort=True):
+        if len(run) >= 2:
+            out.append(run.t_us.diff().dropna())
+
+    if not out:
+        return pd.Series(dtype="int64")
+
+    return pd.concat(out, ignore_index=True).astype("int64")
 
 
 def read_freq_hz(session: Session, oss: int) -> float:
