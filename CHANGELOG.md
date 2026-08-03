@@ -48,7 +48,12 @@ Results: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
   `metrics.py` (DataFrames → numbers), `plot.py` (numbers → charts). Derives
   achieved read frequency, jitter, RMS pressure noise against the datasheet
   Table 3 reference, altitude via datasheet §3.6, temperature drift and loss
-  accounting. 22 tests.
+  accounting. 24 tests.
+- **`metrics.per_block_summary()`** — one row per *contiguous* acquisition block,
+  each with its wall-clock span. Required for any mode-to-mode comparison: the
+  standard capture profile visits `oss=2` twice, and the two visits differ in
+  duration by a factor of eleven, so pooling them silently mixes atmospheric
+  drift into sensor noise.
 - **Serial capture tooling** (`E_analysis/capture.py`, `capture.sh`) which
   pulses the target reset over the ST-Link, so a run begins at the session
   header without pressing the board's B2 button.
@@ -85,17 +90,43 @@ Results: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
   contiguous *run*. Because `oss=2` appears both in the sweep and in the
   continuous phase, it took an interval straight across the intervening `oss=3`
   block: reported jitter for that mode was 206533 µs against a true 0.43 µs.
+- The same pooling flaw affected **noise**, not just intervals — a separate
+  function, missed when the first was fixed. `pressure_noise` merged the 10 s
+  sweep block at `oss=2` with the 111 s continuous block, letting real
+  atmospheric drift inflate that one mode: 4.71 Pa pooled against 5.53 Pa for the
+  comparable sweep block, which made the mode look *better* than it was and
+  partly masked the defect below. `pressure_noise` now documents that it pools;
+  `per_block_summary` is the function to use for comparisons.
 
 ### Findings
 
 The baseline confirms
 [B1](KNOWN_ISSUES.md#b1--conversion-wait-can-expire-before-the-conversion-finishes-live)
-is real and reproducible. Pressure noise fails to fall monotonically with
-oversampling in both runs, at *different* mode transitions — the randomness that
-a stochastic stale-sample effect predicts and that a fixed cause would not
-produce. Timing is meanwhile fully deterministic: median intervals and jitter
-are bit-identical across runs, and jitter stays below 0.5 µs, which rules out
-the scheduler and isolates the defect to the conversion wait.
+is real, reproducible, and **intermittent**.
+
+Each oversampling step should cut RMS pressure noise by about 1.0 Pa. Measured
+per transition against a standard error of `s/sqrt(2(n-1))` ≈ 0.17 Pa at
+n = 500, **each run has exactly one transition that fails at ~5.4 σ — and it is a
+different transition each run**: run 1 at 0→1 (+0.393 Pa observed, z = +5.65),
+run 2 at 1→2 (+0.146 Pa, z = +5.39). The transitions that are *not* spoiled match
+the datasheet closely (run 2: z = +0.22 and +0.71), so the sensor is capable of
+meeting specification and something intermittently prevents it.
+
+That a different mode is spoiled each run is the discriminating evidence. A
+systematic cause — miswired pull-up, wrong control byte, arithmetic error — would
+degrade the same mode every time; only a stochastic cause moves. Two alternatives
+are excluded by the same dataset: inter-sample jitter below 0.5 µs with
+bit-identical median intervals across runs rules out the scheduler, and zero
+dropped records across 15000+ samples rules out telemetry back-pressure.
+
+Derivation and method:
+[`A_report/fragments/02-conversion-timing-defect-evidence.md`](A_report/fragments/02-conversion-timing-defect-evidence.md).
+
+One result is recorded as **unexplained**: OSS3 sits about 1 Pa above the
+datasheet figure in both runs with little variation between them. That
+consistency is unlike the intermittent signature and is more likely a separate
+environmental noise floor. It is deliberately not folded into the timing
+argument, and should be re-examined once the timing fix lands.
 
 Two new issues were recorded during implementation: `temperature_cdeg` is a
 misnomer holding deci-degrees (I17b), and no target build pins `-std=` (I17c).
