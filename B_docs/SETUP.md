@@ -1,20 +1,17 @@
 # Setup
 Steps for building the RTEMS toolchain and BSP for STM32F4 Discovery on macOS.
 
-## 0. Set Target Env
-This is where the toolchain install and all the required tools will live
-```
-- Albi: /Users/albertofurlan/Developer/PoliMi
-- Tom: /Volumes/POLI/tools
-```
-```bash
-export TARGET_DIR=<replace_with_yours>
-```
+## 0. Prerequisites
+Will install all files in a directory in the home called RTEMS
 
-## 0.5 Prerequisites
+
+
 ```bash
-git clone https://gitlab.rtems.org/rtems/rtos/rtems.git $TARGET_DIR/rtems
-git clone https://gitlab.rtems.org/rtems/tools/rtems-source-builder.git $TARGET_DIR/rtems-source-builder
+cd
+mkdir RTEMS
+cd RTEMS
+git clone https://gitlab.rtems.org/rtems/rtos/rtems.git
+git clone https://gitlab.rtems.org/rtems/tools/rtems-source-builder.git rbs
 ```
 
 ## 1. Brew install texinfo 
@@ -24,45 +21,39 @@ brew install texinfo
 ```
 
 ## 2.  Build toolchain 32 bit version
-At the root of the cloned repo `rtems-source-builder` run the commands
 ```bash
 export PATH="$(brew --prefix texinfo)/bin:$PATH"
-$TARGET_DIR/rtems-source-builder/source-builder/sb-set-builder --prefix=$TARGET_DIR/RTEMS_toolchain/rtems 7/rtems-arm
+cd ~/RTEMS/rbs
+./source-builder/sb-set-builder --prefix=~/RTEMS/RTEMS_toolchain/rtems 7/rtems-arm
 ```
 
 ## 3. Add it to PATH
 ```bash
-cat >> ~/.bash_profile << EOF
-
-# RTEMS Toolchain                                                                          
-export PATH="$TARGET_DIR/RTEMS_toolchain/rtems/7/bin:\$PATH"
-export PATH="$TARGET_DIR/RTEMS_toolchain/rtems/bin:\$PATH"
-EOF
-source ~/.bash_profile
+export PATH=~/RTEMS/RTEMS_toolchain/rtems/7/bin:$PATH
+export PATH=~/RTEMS/RTEMS_toolchain/rtems/bin:$PATH
 ```
 
 ## 4. Verify the STM32F4 BSP
 This lists the available BSPs - you should see `arm/stm32f4` in the output.
 ```bash
-cd $TARGET_DIR/rtems
+cd  ~/RTEMS/rtems
 ./waf bsplist | grep stm32f4
 ```
 
 ## 5. Create the config file
 ```bash
+cd  ~/RTEMS/rtems
 cat > config.ini << 'EOF'
 [arm/stm32f4]
 BUILD_TESTS = True
-# BSP_CONSOLE_BAUD = 115200 -- This throws "Unknown configuration option: BSP_CONSOLE_BAUD"
-STM32F4_ENABLE_USART_2 = True
-STM32F4_ENABLE_USART_3 = False
+# BSP_CONSOLE_BAUD = 115200 -- This throws "Unknown configuration option: BSP_CONSOLE_BAUD" 
 EOF
 ```
-Console UART wired to PA2 (TX) / PA3 (RX) = USART2 (see `PIN_CONFIG.md`). Without this override the BSP defaults to USART3, and console output silently goes nowhere.
 
 ## 6. Configure, build, and install
 ```bash
-./waf configure --prefix=$TARGET_DIR/RTEMS_toolchain/rtems/7
+cd  ~/RTEMS/rtems
+./waf configure --prefix=~/RTEMS/RTEMS_toolchain/rtems/7
 ./waf
 ./waf install
 ```
@@ -80,7 +71,8 @@ ls $(brew --prefix openocd)/share/openocd/scripts/target/stm32f4x.cfg
 
 ## 9. Hello exe dumb test
 ```bash
-mkdir -p ~/Desktop/rtems_hello && cd ~/Desktop/rtems_hello
+mkdir -p ~/RTEMS/rtems_hello
+cd ~/RTEMS/rtems_hello
 
 cat > hello.c << 'EOF'
 #include <rtems.h>
@@ -105,26 +97,30 @@ EOF
 
 ## 10. Compile the hello world
 ```bash
+cd ~/RTEMS/rtems_hello/
 arm-rtems7-gcc \
 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 -O0 -g \
--B$TARGET_DIR/RTEMS_toolchain/rtems/7/arm-rtems7/stm32f4/lib/ \
+-B ~/RTEMS/RTEMS_toolchain/rtems/7/arm-rtems7/stm32f4/lib/ \
 -qrtems \
 hello.c -o hello.exe
 ```
 
 ## 11. Verify the ELF target is correct
 ```bash
+cd ~/RTEMS/rtems_hello/
 arm-rtems7-objdump -f hello.exe | head -5
 ```
 
 ## 12. Convert to binary and flash
 ```bash
+cd ~/RTEMS/rtems_hello/
 arm-rtems7-objcopy -O binary hello.exe hello.bin
 ```
 
 ## 13. Verify the binary is sane (should be a few hundred KB max)
 ```bash
+cd ~/RTEMS/rtems_hello/
 ls -lh hello.bin
 xxd hello.bin | head -4   # first bytes should NOT be all-zeros or 0xFF
 ```
