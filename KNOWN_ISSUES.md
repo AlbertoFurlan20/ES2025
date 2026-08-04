@@ -1,8 +1,23 @@
-# Known Issues — v1.0.0
+# Known Issues
+
+**Audited against: v1.1.0 (2026-08-04).** Line citations re-verified after Phase 0
+instrumentation moved `sensor.cpp` and `init.cpp`. The measurement path itself is
+unchanged since v1.0.0, so every defect in it stands as originally described.
 
 Audit of `C_src` against the BMP180 datasheet (BST-BMP180-DS000-09 Rev 2.5),
 ST RM0090, and the RTEMS I2C framework sources
 (`cpukit/dev/i2c/i2c-bus.c`, `cpukit/dev/i2c/i2c-dev.c`).
+
+## Changes since the v1.0.0 audit
+
+| Issue | Change |
+|-------|--------|
+| [B1](#b1--conversion-wait-can-expire-before-the-conversion-finishes-live) | **Confirmed on hardware.** No longer a prediction — measured in two independent captures. See [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md). |
+| [B6](#b6--negative-temperatures-print-malformed-latent-since-v110) | One of its two sites was deleted with the sweep task. Now `[latent]`, not `[live]`. |
+| [B7](#b7--registration-failure-leaves-a-silently-dead-board-live) | The commented-out heartbeat it referred to is gone entirely, so the misleading comment now points at nothing at all. |
+| [I11](#i11--resolved-in-v110--sweep-task-ran-on-rtems_minimum_stack_size) | **Resolved.** `setupTask` takes an explicit stack size; both tasks get 4 KB. |
+| [I18](#i18--dead-code-carried-in-the-build) | `bmp180_oss_sweep_task`, `isqrt32` and `heartbeat_task_id` deleted. Three dead functions remain. |
+| I17b, I17c | **New**, found during Phase 0 implementation. |
 
 Two sections: **BUGS** (defects — the code does something other than what it
 should) and **IMPROVEMENTS** (correct-but-weak — robustness, portability,
@@ -16,7 +31,8 @@ Severity meaning:
 | **Medium** | Wrong behaviour under specific but realistic conditions |
 | **Low** | Latent, cosmetic, or only reachable through code not currently wired in |
 
-Legend: **[live]** = on the default boot path (`Entrypoint` → `bmp180_oss_sweep_task`).
+Legend: **[live]** = on the default boot path
+(`Entrypoint` → `bmp180_telemetry_task` + `telem_emitter_task`).
 **[latent]** = in code not currently reached, so it cannot bite until that code is wired in.
 
 ---
@@ -52,9 +68,21 @@ corrupts the noise figures the OSS sweep task is built to measure — inflated
 **Fix direction:** add one tick of margin to each constant, or poll the SCO bit
 (see [I5](#i5--poll-the-sco-bit-instead-of-sleeping-a-fixed-time)).
 
+> **Confirmed on hardware, v1.1.0 baseline.** Two independent 150 s captures. Each
+> oversampling step should cut RMS noise ~1.0 Pa; in each run **exactly one
+> transition fails at ~5.4σ, and a different one each time** — run 1 at 0→1
+> (+0.393 Pa observed, z = +5.65), run 2 at 1→2 (+0.146 Pa, z = +5.39). The
+> unspoiled transitions match the datasheet closely (run 2: z = +0.22, +0.71), so
+> the sensor can meet spec and something intermittently stops it. A systematic
+> cause would spoil the same mode every run; only a stochastic one moves. Jitter
+> below 0.5 µs and zero dropped records rule out the scheduler and telemetry
+> back-pressure respectively. Derivation:
+> [`A_report/fragments/02-conversion-timing-defect-evidence.md`](A_report/fragments/02-conversion-timing-defect-evidence.md).
+> Numbers and R2 criteria: [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md).
+
 ### B2 — `bmp180_task_manual` passes the device path as the bus path [latent]
 
-`C_src/src/sensor.cpp:110-112`
+`C_src/src/sensor.cpp:112-114`
 
 ```cpp
 const auto bus_path = "/dev/bmp180-0";
@@ -69,7 +97,7 @@ outside its four commands. Registration can never succeed on this path.
 
 ### B3 — Null-pointer dereference in the registration failure handler [latent]
 
-`C_src/src/sensor.cpp:175-182`
+`C_src/src/sensor.cpp:177-184`
 
 ```cpp
 catch (const std::exception& e)
@@ -78,14 +106,14 @@ catch (const std::exception& e)
     dev_ptr->base.destroy(&dev_ptr->base);   // dev_ptr may still be nullptr
 ```
 
-`dev_ptr` is initialised to `nullptr` at line 114 and only assigned after
+`dev_ptr` is initialised to `nullptr` at line 116 and only assigned after
 `bmp180_register` returns. Any exception thrown before that assignment reaches
 this handler with `dev_ptr == nullptr`, and the cleanup faults. The error path
 is strictly worse than no error path at all.
 
 ### B4 — Use-after-free: device freed while its `/dev` node is still published [latent]
 
-`C_src/src/sensor.cpp:158`, `C_src/src/sensor.cpp:213`
+`C_src/src/sensor.cpp:160`, `C_src/src/sensor.cpp:215`
 
 Confirmed against RTEMS sources: `i2c_dev_alloc_and_init` installs
 `i2c_dev_destroy_and_free` as the `destroy` handler, and that function does
@@ -106,7 +134,7 @@ directly on a registered device.
 
 ### B5 — Debug output is gated on `#ifndef DEBUG` (inverted) [latent]
 
-`C_src/src/sensor.cpp:130`, `C_src/src/sensor.cpp:205`
+`C_src/src/sensor.cpp:132`, `C_src/src/sensor.cpp:207`
 
 The blocks that dump calibration coefficients and exception text are wrapped in
 `#ifndef DEBUG` — they compile in when `DEBUG` is **not** defined and vanish when
@@ -114,24 +142,26 @@ it is. `DEBUG` is not defined anywhere in `CMakeLists.txt`, `Makefile`, or
 `compile.sh` (verified), so today these always compile. The intent is clearly
 the opposite.
 
-### B6 — Negative temperatures print malformed [live]
+### B6 — Negative temperatures print malformed [latent since v1.1.0]
 
-`C_src/src/sensor.cpp:69-72`, `C_src/src/sensor.cpp:359-361`
-
-Both readers split the centi-degree value into whole and fractional parts with
-`/ 10` and `% 10` — the live sweep task at line 359:
+`C_src/src/sensor.cpp:71-74`
 
 ```cpp
-printf("Temperature: %ld.%ld degC   Pressure: %ld Pa\n",
-       static_cast<long>(m.temperature_cdeg / 10),
-       static_cast<long>(m.temperature_cdeg % 10),
+printf("Temperature: %d.%d degC   Pressure: %ld Pa\n",
+       static_cast<int>(m.temperature_cdeg / 10),
+       static_cast<int>(m.temperature_cdeg % 10),
 ```
-
-and `bmp180_task` at line 69 with the same expressions cast to `int`.
 
 C integer division truncates toward zero and `%` keeps the sign of the dividend,
 so `-24` (i.e. −2.4 °C) prints as `-2.-4`. The BMP180 is specified down to
 −40 °C, so this is inside the operating range, not a corner case.
+
+**Downgraded from `[live]` to `[latent]` in v1.1.0.** The second site, in
+`bmp180_oss_sweep_task`, was deleted along with that task. The surviving site is
+in `bmp180_task`, which is no longer on the boot path. The telemetry emitter is
+unaffected: it writes `t_cdeg` as a single signed integer via `fmt_i32` and never
+splits it, so the whole class of error cannot occur there — the split now happens
+host-side in `plot.py`, in Python, where `/` and `%` floor consistently.
 
 ### B7 — Registration failure leaves a silently dead board [live]
 
@@ -144,15 +174,21 @@ comment:
 // Keep going: the heartbeat still proves the system is alive.
 ```
 
-But the heartbeat is commented out seventeen lines further down:
+There is no heartbeat. In v1.0.0 the call was commented out seventeen lines
+below; v1.1.0 removed even that, so the comment now refers to something with no
+trace in the file at all. `alive_task` still exists in `alive.cpp` and is still
+never started.
 
-```cpp
-//setupTask(heartbeat_task_id, "ALVE", 3, alive_task);
-```
+So when registration fails, the telemetry task's `open("/dev/bmp180-0")` fails,
+the task deletes itself, the init task suspends, and the board goes quiet with no
+indication of why. The comment documents a safety net that does not exist.
 
-So when registration fails, the sweep task's `open("/dev/bmp180-0")` fails, the
-task deletes itself, the init task suspends, and the board goes quiet with no
-indication of why. The comment documents a safety net that no longer exists.
+**Slightly worse in v1.1.0, and more consequential.** Because the console now
+carries a machine-readable stream rather than prose, a silent death is harder to
+notice by eye — the capture simply contains a header and no `S` records.
+`E_analysis` reports that honestly (`samples=0`), so the failure is detectable,
+but only after a capture rather than at a glance. Either start the heartbeat or
+emit an `E` record and delete the comment.
 
 ### B8 — `oss` is not validated in `bmp180_register` → out-of-bounds read [live]
 
@@ -183,7 +219,7 @@ calibration data or a wild `UT` from [B1](#b1--conversion-wait-can-expire-before
 
 ### B10 — `int` return compared against `rtems_status_code` [latent]
 
-`C_src/src/sensor.cpp:155`
+`C_src/src/sensor.cpp:157`
 
 ```cpp
 if (bmp180_load_calibration(dev) != RTEMS_SUCCESSFUL)
@@ -196,7 +232,7 @@ maps the return onto RTEMS status semantics.
 
 ### B11 — `setupTask` takes `rtems_id` by value [live]
 
-`C_src/src/init.cpp:15`
+`C_src/src/init.cpp:16-17`
 
 ```cpp
 void setupTask(rtems_id task_id, const char title[4], const int prio, TaskType taskRrf)
@@ -234,7 +270,7 @@ the optimiser being entitled to reorder these loads.
 
 ### B14 — Missing newline in the calibration print [latent]
 
-`C_src/src/sensor.cpp:133`
+`C_src/src/sensor.cpp:135`
 
 `printf("Calibration is loaded: %d", cal_is_loaded);` — no `\n`, so the line runs
 into the following `printf`.
@@ -373,14 +409,18 @@ Batch it with any other ioctl-numbering change.
   lazily on first measurement.
 - `C_src/README.md:19` — a `**[Claude GENERATED]**` marker left in the prose.
 
-### I11 — Sweep task runs on `RTEMS_MINIMUM_STACK_SIZE`
+### I11 — RESOLVED in v1.1.0 — sweep task ran on `RTEMS_MINIMUM_STACK_SIZE`
 
-`C_src/src/init.cpp:20`, `C_src/src/sensor.cpp:298`
+~~Every task created through `setupTask` got the minimum stack, while the init
+task was given `4 * 1024` explicitly — suggesting the minimum had already been
+found wanting once.~~
 
-Every task created through `setupTask` gets the minimum stack. The sweep task
-puts a 128-byte sample array on it and calls newlib `printf`, whose formatting
-buffers are not small. The init task was given `4 * 1024` explicitly
-(`init.cpp:101`), which suggests the minimum was already found wanting once.
+**Fixed.** `setupTask` now takes an explicit `stack_size` parameter
+(`C_src/src/init.cpp:16-17`) and both the acquisition and emitter tasks are
+created with 4 KB. No `RTEMS_MINIMUM_STACK_SIZE` remains in `init.cpp`.
+
+Retained here rather than deleted so the remediation rounds have a record of what
+Phase 0 already absorbed.
 
 ## Low
 
@@ -427,6 +467,38 @@ which is precisely the kind of defect that hides in an untested teardown path.
 `memset(&dev->calib, 0, sizeof(dev->calib))` clears already-zero memory.
 Harmless, but it implies a guarantee the caller has not actually checked.
 
+### I17b — `temperature_cdeg` is a misnomer
+
+`C_src/inc/bmp_types.h:49`
+
+```c
+int32_t  temperature_cdeg;   /* Temperature [steps of 0.1°C] */
+```
+
+The name says centi-degrees; the comment and the value say deci-degrees. The
+comment is correct — datasheet Table 1 gives 0.1 °C resolution — so the name is
+wrong by a factor of ten.
+
+Found during Phase 0: it produced a real unit bug in the host tooling, where a
+drift metric came out 10× off. `E_analysis/metrics.py` now absorbs the
+conversion so no consumer has to know, but the field itself should be renamed
+`temperature_ddeg` (or the value scaled) so the trap stops existing. Renaming
+touches the ioctl payload struct, so it is a breaking change — batch it with
+[I9](#i9--read_measurement-is-declared-_iow-but-writes-back-to-the-caller).
+
+### I17c — Target build does not pin the C++ standard
+
+`C_src/compile.sh:13-19`, `C_src/Makefile:8-16`
+
+Neither passes `-std=`. The code uses C++17 features — `if` with initializer in
+`telemetry.cpp` and structured bindings in `sensor.cpp` — and compiles only
+because this `arm-rtems7-g++` happens to default to `gnu++17`.
+
+`CMakeLists.txt:25` sets `CMAKE_CXX_STANDARD 17` and `C_src/tests/Makefile` sets
+`-std=c++17`, so two of the four build paths pin it and two do not. An older
+toolchain would break the unpinned pair with confusing syntax errors. Fix
+alongside [I3](#i3--three-divergent-toolchain-path-mechanisms).
+
 ### I17 — Header guard style is inconsistent
 
 `C_src/inc/constants.h:1` uses `#pragma once`; the other four headers use
@@ -435,27 +507,43 @@ Harmless, but it implies a guarantee the caller has not actually checked.
 ### I18 — Dead code carried in the build
 
 `alive_task`, `bmp180_task` and `bmp180_task_manual` are all compiled but
-unreachable, and `heartbeat_task_id` (`C_src/src/init.cpp:77`) is unused. Two of
-the three latent High-severity bugs above ([B2](#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent),
+unreachable. All three latent High-severity bugs above
+([B2](#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent),
 [B3](#b3--null-pointer-dereference-in-the-registration-failure-handler-latent),
 [B4](#b4--use-after-free-device-freed-while-its-dev-node-is-still-published-latent))
-live in `bmp180_task_manual`. Either wire it in and test it, or delete it.
+live in `bmp180_task_manual`, and [B5](#b5--debug-output-is-gated-on-ifndef-debug-inverted-latent),
+[B10](#b10--int-return-compared-against-rtems_status_code-latent) and
+[B14](#b14--missing-newline-in-the-calibration-print-latent) do too. Deleting that
+one function closes six of the fourteen bugs on this page without debugging any
+of them — which is why R1 does exactly that.
+
+**Partly reduced in v1.1.0:** `bmp180_oss_sweep_task`, `isqrt32` and the unused
+`heartbeat_task_id` were deleted with the Phase 0 rewrite. The three functions
+above remain.
 
 ---
 
 ## Summary
 
-| Section | High | Medium | Low | Total |
-|---------|------|--------|-----|-------|
-| BUGS | 4 | 5 | 5 | 14 |
-| IMPROVEMENTS | 4 | 7 | 7 | 18 |
+As of v1.1.0:
 
-Of the 14 bugs, **6 are on the live boot path** (B1, B6, B7, B8, B9, B11) and
-8 are latent in unwired code — 3 of which ([B2](#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent),
-[B3](#b3--null-pointer-dereference-in-the-registration-failure-handler-latent),
-[B4](#b4--use-after-free-device-freed-while-its-dev-node-is-still-published-latent))
-are concentrated in `bmp180_task_manual`.
+| Section | High | Medium | Low | Open | Resolved |
+|---------|------|--------|-----|------|----------|
+| BUGS | 4 | 5 | 5 | 14 | 0 |
+| IMPROVEMENTS | 4 | 7 | 9 | 19 | 1 (I11) |
 
-[B1](#b1--conversion-wait-can-expire-before-the-conversion-finishes-live) is the
-one to fix first: it is live, it silently corrupts the primary output, and it
-undermines the OSS sweep that the release is built around.
+Of the 14 bugs, **5 are on the live boot path** (B1, B7, B8, B9, B11) and 9 are
+latent in unwired code. B6 moved from live to latent when Phase 0 deleted the
+sweep task.
+
+**Six of the nine latent bugs live in one function.** B2, B3, B4, B5, B10 and B14
+are all inside `bmp180_task_manual`, which is compiled but never reached.
+Deleting it closes all six without debugging any — which is why R1 does that
+before R2 touches anything that matters.
+
+[B1](#b1--conversion-wait-can-expire-before-the-conversion-finishes-live) remains
+the one to fix first, and is no longer a matter of judgement: it is **confirmed
+on hardware** across two independent captures, it silently corrupts the primary
+output, and it is the reason the v1.1.0 baseline shows noise rising with
+oversampling. [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md) states the six
+criteria R2 must satisfy to close it.
