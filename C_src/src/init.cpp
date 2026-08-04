@@ -5,19 +5,21 @@
 #include "constants.h"
 #include "i2c1.h"
 #include "bmp.h"
+#include "telemetry.h"
 
 rtems_task alive_task(rtems_task_argument ignored);
 rtems_task bmp180_task(rtems_task_argument ignored);
 rtems_task bmp180_task_manual(rtems_task_argument ignored);
-rtems_task bmp180_oss_sweep_task(rtems_task_argument ignored);
+rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 
 template <typename TaskType>
-void setupTask(rtems_id task_id, const char title[4], const int prio, TaskType taskRrf)
+void setupTask(rtems_id task_id, const char title[4], const int prio,
+               const size_t stack_size, TaskType taskRrf)
 {
     rtems_status_code task = rtems_task_create(
         rtems_build_name(title[0], title[1], title[2], title[3]),
         prio,
-        RTEMS_MINIMUM_STACK_SIZE,
+        stack_size,
         RTEMS_DEFAULT_MODES,
         RTEMS_DEFAULT_ATTRIBUTES,
         &task_id
@@ -73,14 +75,17 @@ rtems_task Entrypoint(rtems_task_argument ignored)
         printf("%s BMP180 registered on /dev/bmp180-0\n", DEBUG_TITLE);
     }
 
-    // TODO - check that by init + constexpr i don't fuck things up
-    constexpr rtems_id heartbeat_task_id = 0;
     constexpr rtems_id sensor_task_id = 0;
+    constexpr rtems_id emitter_task_id = 0;
 
-    //setupTask(heartbeat_task_id, "ALVE", 3, alive_task);
-    // OSS sweep + noise characterization, then a normal 1 Hz read loop.
-    // Swap back to `bmp180_task` here for the plain reader without the sweep.
-    setupTask(sensor_task_id, "SWEP", 1, bmp180_oss_sweep_task);
+    // Session header goes out synchronously, before any record can be emitted.
+    telem_emit_header("1.1.0", 0);
+
+    // Acquisition runs at higher priority (lower number) than emission, so the
+    // console can never delay a measurement. The emitter gets the CPU during the
+    // conversion sleeps, which is most of every acquisition cycle.
+    setupTask(sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
+    setupTask(emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
 
     rtems_task_suspend(RTEMS_SELF);
 }
@@ -90,7 +95,7 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 #define CONFIGURE_APPLICATION_NEEDS_CONSOLE_DRIVER
 
 #define CONFIGURE_MICROSECONDS_PER_TICK     1000   /* 1 ms tick → 1000 ticks/sec */
-#define CONFIGURE_MAXIMUM_TASKS             4
+#define CONFIGURE_MAXIMUM_TASKS             6
 
 /* stdin/stdout/stderr take 3 fds; default max is 3 → any open() returns ENFILE.
  * Bump so the I2C bus node + device node can be opened. */

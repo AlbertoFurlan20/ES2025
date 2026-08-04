@@ -1,5 +1,5 @@
-RTEMS_PREFIX = /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems/7
-RTEMS_TOOL_PREFIX = /Users/albertofurlan/Developer/PoliMi/RTEMS_toolchain/rtems
+RTEMS_PREFIX = /Volumes/POLI/tools/RTEMS_toolchain/rtems/7
+RTEMS_TOOL_PREFIX = /Volumes/POLI/tools/RTEMS_toolchain/rtems
 BSP_LIB      = $(RTEMS_PREFIX)/arm-rtems7/stm32f4/lib
 # Use g++ instead of gcc for C++ code
 CXX          = $(RTEMS_TOOL_PREFIX)/bin/arm-rtems7-g++
