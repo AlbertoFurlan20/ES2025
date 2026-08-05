@@ -1,26 +1,61 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+Firmware changes only. Documentation, host tooling and build scripts are not
+tracked here — see the git history for those.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-08-05
+
+First release to change the measurement path since 1.0.0.
+
+### Fixed
+
+- **B1 — conversion waits could expire before the conversion finished.**
+  `rtems_task_wake_after(n)` blocks for between `n-1` and `n` ticks: the call
+  lands somewhere inside the current tick, so the first one is partial. Every
+  conversion constant sat at exactly the datasheet maximum, so at a 1 ms tick any
+  wait could come up 1 ms short. Reading `0xF6` mid-conversion returns the
+  *previous* result — no error, no NAK, just a silently stale sample.
+
+  Each constant is now `datasheet_max + 1` tick, so even the worst-case `n-1`
+  wait clears the specification with ~0.5 ms of margin:
+
+  | | was | now | datasheet max | worst case |
+  |---|-----|-----|---------------|------------|
+  | temperature | 5 ms | 6 ms | 4.5 ms | 5.0 ms |
+  | pressure OSS0 | 5 ms | 6 ms | 4.5 ms | 5.0 ms |
+  | pressure OSS1 | 8 ms | 9 ms | 7.5 ms | 8.0 ms |
+  | pressure OSS2 | 14 ms | 15 ms | 13.5 ms | 14.0 ms |
+  | pressure OSS3 | 26 ms | 27 ms | 25.5 ms | 26.0 ms |
+
+  Costs 2 ms per measurement — a cycle contains one temperature and one pressure
+  conversion — taking the measured interval from 11/14/20/32 ms to
+  13/16/22/34 ms. Confirmed on hardware to the microsecond.
+
+### Notes
+
+- **The fix does not improve pressure noise, and the reasoning that predicted it
+  would was wrong.** The argument was: B1 causes stale reads, stale reads stop
+  noise falling with oversampling, so fixing B1 fixes the noise. The first half
+  holds; the second does not. With reads provably landing after the conversion
+  completes, the noise is statistically indistinguishable from before.
+
+  The noise is environmental. Fitting a floor in quadrature across six captures
+  gives 0–2.6 Pa, tracking neither the firmware version nor anything else under
+  software control — the two quietest runs predate this fix. At 8.33 cm of
+  altitude per Pa, the whole anomaly is 0–22 cm.
+
+  B1 was worth fixing on its own terms: the off-by-one is real and provable from
+  the RTEMS semantics and the datasheet, independent of what the noise does.
+
 ## [1.2.0] - 2026-08-05
 
-Cleanup release — remediation round R1, the "build safety net". Deletes every
-unreachable function in the tree and tightens all build paths.
+Cleanup release. Deletes every unreachable function in the tree. Eight known
+bugs close, seven of them by deletion rather than by being debugged.
 
-**Eight of fourteen known bugs close here, none of them by being debugged.** Six
-lived in `bmp180_task_manual` and one in `bmp180_task`; both functions were
-compiled but never reachable from `Entrypoint`. B7 is the exception: it needed a
-real fix, because deleting `alive_task` removed the heartbeat its "keep going"
-justification depended on.
-
-The measurement path remains byte-for-byte as in 1.0.0, and **the build is now
-warning-free**.
-
-Verified on hardware: runs 3 and 4 reproduce the 1.1.0 timing columns
-bit-for-bit, with zero drops, errors or malformed lines.
+The measurement path is byte-for-byte as in 1.0.0.
 
 ### Removed
 
@@ -28,95 +63,62 @@ bit-for-bit, with zero drops, errors or malformed lines.
   `bmp180_do_measurement` on the raw device struct. It could never have been
   wired up as written: it passed the device path as the bus path, and
   `Entrypoint` already registers that node. Closes B2, B3, B4, B5, B10, B14.
-- **`bmp180_task`** — periodic reader that read through the device node
+- **`bmp180_task`** — periodic reader that went through the device node
   correctly and then `printf`-ed at a fixed 1 Hz. Superseded by
-  `bmp180_telemetry_task`, which is the same consumer emitting parseable records
-  at the sensor's own rate. Closes B6, its last remaining site.
+  `bmp180_telemetry_task`, the same consumer emitting parseable records at the
+  sensor's own rate. Closes B6, its last remaining site.
 - **`alive_task` and `alive.cpp`** — heartbeat whose call site was commented out
   in 1.0.0 and deleted in 1.1.0.
 - The three corresponding forward declarations in `init.cpp`.
-- `C_src/src/sensor.cpp` drops from 304 to 94 lines.
-- Seven internal function declarations from `C_src/inc/bmp.h`, which falls from
-  158 to 70 lines and now exposes only what callers actually use.
+- `sensor.cpp` drops from 304 to 94 lines.
 
 ### Fixed
 
 - **B7 — registration failure is no longer silent.** A failed chip-id read at
   boot now pushes `E <t_us> 19` (`ENODEV`) into the telemetry stream before the
   tasks start, and the session header moved above registration so the stream is
-  never headerless. Previously the failure printed to a console nobody captures
-  and was justified by a heartbeat that no longer ran. Still non-fatal.
-- `-Wunused-parameter` in `Entrypoint`, surfaced by the new warning flags.
+  never headerless. Previously the failure printed to a console nobody captures,
+  justified by a heartbeat that no longer ran. Still non-fatal.
 - **I2 — seven functions declared `static` in a shared header.** `static` gives
-  internal linkage, so declaring these in `bmp.h` handed every other includer a
-  symbol it could never link against — reported once per includer, 14 warnings in
-  total. Declarations moved into `bmp180.cpp`. **The build now compiles with zero
-  warnings under `-Wall -Wextra`.**
-- **`Session` dataclass in `E_analysis/bmp180_analysis/parse.py`** had an
-  explicit `def __init__(self): pass`, which overrides the generated constructor
-  and made `Session(schema=..., fw=...)` raise `TypeError`. 20 of 24 Python tests
-  were failing. Removed.
+  internal linkage, so declaring them in `bmp.h` handed every other translation
+  unit a symbol it could never link against. Declarations moved into
+  `bmp180.cpp`; `bmp.h` falls from 158 to 70 lines and now exposes only what
+  callers use.
+- `-Wunused-parameter` in `Entrypoint`.
 
 ### Changed
 
-- **One source of truth for the toolchain path (I3).** The root
-  `CMakeLists.txt`, `C_src/Makefile`, `C_src/compile.sh` and `C_src/flash.sh` all
-  read `RTEMS_LOCAL_PATH` from `local.cmake`, overridable from the environment.
-  `.env/setup.env` is no longer consulted, and the scripts call the toolchain by
-  absolute path rather than trusting `PATH`.
-- **`-Wall -Wextra` on every build path (I4).** The list it produced was triaged
-  and then emptied — see I2 under *Fixed*. Still not `-Werror`, but the tree is
-  clean, so promoting it is now a one-line change rather than a project.
-- **`-std=c++17` pinned (I17c).** The target build previously compiled C++17
-  only because this GCC defaults to `gnu++17`.
-- **`-fno-exceptions -fno-rtti` (I7).** `bmp180_task_manual` was the only
+- **The I2C driver is no longer hardcoded to I2C1.** Base address, RCC clock
+  index, alternate-function number and the SCL/SDA pins move into a
+  `stm32f4_i2c_hw` config struct; `stm32f4_register_i2c1(path)` becomes
+  `stm32f4_register_i2c(path, hw)`. The transfer engine was already
+  instance-agnostic — most of it reads the register block through a pointer — so
+  only the bring-up path changed. Adding I2C2 or I2C3 is one constant and one
+  call. `i2c1.{h,cpp}` renamed to `i2c.{h,cpp}`.
+- **`-std=c++17` pinned.** The target build previously compiled C++17 only
+  because this GCC defaults to `gnu++17`.
+- **`-fno-exceptions -fno-rtti`.** `bmp180_task_manual` was the only
   `throw`/`catch`/`<stdexcept>` user in the tree. Measured saving: 520 bytes of
   `.text` at `-O0`.
-- Telemetry session header reports `fw=1.2.0`, from a single `DRIVER_VERSION`
-  constant in `init.cpp` rather than a string literal at the call site.
-- `C_src/TESTING.md` rewritten — sections 4 and 5 described the sweep task and
-  heartbeat, both deleted in 1.1.0, and told the reader to swap back to
-  `bmp180_task`. Now describes the telemetry stream, host-side analysis, and the
-  `E`-record fault signature.
+- Telemetry session header reports the firmware version from a single
+  `DRIVER_VERSION` constant rather than a literal at the call site.
 
 ### Notes
 
-- **B11 did not surface under `-Wall -Wextra`**, though R1's gate predicted it
-  would. Passing `rtems_id` by value is legal C++ and no warning class covers it.
-  The prediction was wrong; B11 still needs its own fix in R2.
-- The `[latent]` bug category is now empty. Every bug that remains — B1, B8, B9,
+- The `[latent]` bug category is now empty. Every remaining bug — B1, B8, B9,
   B11, B12, B13 — is on the live boot path. B12 is an unreachable *branch* in
   live code, not dead code, and needs a guard added rather than code removed.
-- **A capture passed the R2 acceptance gate with B1 fully unfixed.** Run 3 is
-  monotonic across every oversampling step and sits at or below the datasheet
-  noise figure in all four modes, while `bmp_regs.h` remained byte-identical to
-  `v1.1.0`. Run 4, three minutes later from the same binary, fails the 0→1
-  transition at 5.73σ. A single-capture acceptance test would therefore have
-  certified an unfixed defect as repaired. The two-run requirement was written
-  on theoretical grounds; it now has a worked counterexample behind it.
-
-### Added
-
-- **`stm32f4_i2c_hw` — the I2C driver is no longer hardcoded to I2C1.** Base
-  address, RCC clock index, alternate-function number and the SCL/SDA pins move
-  into a config struct; `stm32f4_register_i2c1(path)` becomes
-  `stm32f4_register_i2c(path, hw)`. The transfer engine was already
-  instance-agnostic — roughly 220 of its 250 lines read the register block
-  through a pointer — so only the bring-up path changed. `i2c1.{h,cpp}` renamed
-  to `i2c.{h,cpp}` to match. Adding I2C2 or I2C3 is now one constant and one
-  call.
 
 ## [1.1.0] - 2026-08-04
 
-Instrumentation release. Adds a structured measurement stream and host-side
-analysis tooling, producing the reference dataset that later remediation is
-measured against.
+Instrumentation release. Replaces on-device statistics with a structured
+measurement stream.
 
 **The measurement path is unchanged.** `bmp180_do_measurement`,
-`bmp180_read_ut`, `bmp180_read_up`, `bmp180_compensate`, all of `i2c1.cpp`, and
-every timing constant in `bmp_regs.h` are byte-for-byte as in 1.0.0. Only
-reporting was replaced. This was deliberate: the point of the release is to
-measure 1.0.0 honestly, not to improve it.
+`bmp180_read_ut`, `bmp180_read_up`, `bmp180_compensate`, all of the I2C driver
+and every timing constant in `bmp_regs.h` are byte-for-byte as in 1.0.0. Only
+reporting was replaced — the point of the release is to measure 1.0.0 honestly,
+not to improve it.
 
 ### Added
 
@@ -130,97 +132,27 @@ measure 1.0.0 honestly, not to improve it.
   and never blocks; a lower-priority emitter task formats and writes. On
   overflow the *new* record is dropped and counted — queued records are never
   overwritten, so surviving data stays contiguous in time. Deliberately free of
-  RTEMS dependencies so it is unit-testable on the host.
+  RTEMS dependencies so it is unit-testable on a host.
 - **Integer formatters** (`C_src/inc/telem_fmt.h`). The emitter uses no
   `printf`: newlib-nano configurations silently mis-format `%llu`, and 64-bit
-  microsecond timestamps need to be exact. Each line is assembled into a buffer
-  and issued as a single `write()`.
+  microsecond timestamps must be exact. Each line is assembled into a buffer and
+  issued as a single `write()`.
 - **Emitter task** (`C_src/src/telemetry.cpp`) with drop reporting. Timestamps
   come from `rtems_clock_get_uptime_nanoseconds()`, which reads the hardware
   timecounter and so resolves finer than the 1 ms tick.
-- **Host unit tests** (`C_src/tests/`) for the ring and formatters, compiled
-  with the host compiler under `-Wall -Wextra`. Covers FIFO order, wraparound,
-  overflow accounting, and the `INT32_MIN` negation trap.
-- **Python analysis package** (`E_analysis/`) split three ways so metrics are
-  testable without hardware or a display: `parse.py` (text → DataFrames),
-  `metrics.py` (DataFrames → numbers), `plot.py` (numbers → charts). Derives
-  achieved read frequency, jitter, RMS pressure noise against the datasheet
-  Table 3 reference, altitude via datasheet §3.6, temperature drift and loss
-  accounting. 24 tests.
-- **`metrics.per_block_summary()`** — one row per *contiguous* acquisition block,
-  each with its wall-clock span. Required for any mode-to-mode comparison: the
-  standard capture profile visits `oss=2` twice, and the two visits differ in
-  duration by a factor of eleven, so pooling them silently mixes atmospheric
-  drift into sensor noise.
-- **Serial capture tooling** (`E_analysis/capture.py`, `capture.sh`) which
-  pulses the target reset over the ST-Link, so a run begins at the session
-  header without pressing the board's B2 button.
 
 ### Changed
 
 - `bmp180_oss_sweep_task` replaced by `bmp180_telemetry_task`, which emits raw
-  records instead of computing statistics on the device. Mean, standard
-  deviation, peak-to-peak and achieved rate are now derived host-side, where
-  they can be recomputed without reflashing and where the derivation is itself
-  under test.
-- `setupTask` takes an explicit stack size. Both new tasks get 4 KB rather than
+  records instead of computing statistics on the device.
+- `setupTask` takes an explicit stack size. Both tasks get 4 KB rather than
   `RTEMS_MINIMUM_STACK_SIZE`; acquisition runs at priority 2, above the emitter
   at 5, so the console can never delay a measurement.
 - `CONFIGURE_MAXIMUM_TASKS` raised from 4 to 6.
-- `C_src/Makefile` toolchain paths no longer hardcode one developer's home
-  directory.
 
 ### Removed
 
-- `isqrt32` and the on-device statistics it supported, superseded by
-  `E_analysis/metrics.py`.
-
-### Fixed
-
-- `E_analysis/capture.sh` originally used `stty -f` followed by `cat`. On macOS,
-  termios settings applied to a `/dev/cu.*` node are reset when the port is
-  opened, so captures recorded framing garbage at the driver's default baud. It
-  also used `timeout(1)`, which macOS does not ship. Both replaced by
-  `capture.py`, which applies termios to an already-open descriptor.
-- `metrics.intervals_us` filtered samples by oversampling *value* rather than by
-  contiguous *run*. Because `oss=2` appears both in the sweep and in the
-  continuous phase, it took an interval straight across the intervening `oss=3`
-  block: reported jitter for that mode was 206533 µs against a true 0.43 µs.
-- The same pooling flaw affected **noise**, not just intervals — a separate
-  function, missed when the first was fixed. `pressure_noise` merged the 10 s
-  sweep block at `oss=2` with the 111 s continuous block, letting real
-  atmospheric drift inflate that one mode: 4.71 Pa pooled against 5.53 Pa for the
-  comparable sweep block, which made the mode look *better* than it was and
-  partly masked the defect below. `pressure_noise` now documents that it pools;
-  `per_block_summary` is the function to use for comparisons.
-
-### Findings
-
-The baseline confirms B1 is real, reproducible, and **intermittent**.
-
-Each oversampling step should cut RMS pressure noise by about 1.0 Pa. Measured
-per transition against a standard error of `s/sqrt(2(n-1))` ≈ 0.17 Pa at
-n = 500, **each run has exactly one transition that fails at ~5.4 σ — and it is a
-different transition each run**: run 1 at 0→1 (+0.393 Pa observed, z = +5.65),
-run 2 at 1→2 (+0.146 Pa, z = +5.39). The transitions that are *not* spoiled match
-the datasheet closely (run 2: z = +0.22 and +0.71), so the sensor is capable of
-meeting specification and something intermittently prevents it.
-
-That a different mode is spoiled each run is the discriminating evidence. A
-systematic cause — miswired pull-up, wrong control byte, arithmetic error — would
-degrade the same mode every time; only a stochastic cause moves. Two alternatives
-are excluded by the same dataset: inter-sample jitter below 0.5 µs with
-bit-identical median intervals across runs rules out the scheduler, and zero
-dropped records across 15000+ samples rules out telemetry back-pressure.
-
-One result is recorded as **unexplained**: OSS3 sits about 1 Pa above the
-datasheet figure in both runs with little variation between them. That
-consistency is unlike the intermittent signature and is more likely a separate
-environmental noise floor. It is deliberately not folded into the timing
-argument, and should be re-examined once the timing fix lands.
-
-Two new issues were recorded during implementation: `temperature_cdeg` is a
-misnomer holding deci-degrees (I17b), and no target build pins `-std=` (I17c).
+- `isqrt32` and the on-device statistics it supported.
 
 ## [1.0.0] - 2026-08-03
 
@@ -282,12 +214,10 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
 - Register map, conversion times, chip-ID and soft-reset constants factored into
   `C_src/inc/bmp_regs.h`; data types into `C_src/inc/bmp_types.h`.
 
-#### STM32F4 I2C1 bus driver (`C_src/src/i2c1.cpp`, `C_src/inc/i2c1.h`)
+#### STM32F4 I2C1 bus driver
 
 - Custom polled I2C master for the STM32F4 BSP, written because the BSP ships no
-  driver for the modern `<dev/i2c/i2c.h>` framework — only the legacy
-  `stm32f4_i2c` API, which is disabled and whose F4 GPIO mux is
-  `#error Not implemented`.
+  driver for the modern `<dev/i2c/i2c.h>` framework.
 - `stm32f4_register_i2c1(bus_path)` — enables the GPIOB and I2C1 clocks,
   configures PB6 (SCL) and PB7 (SDA) as AF4, open-drain, 50 MHz, internal
   pull-up, software-resets the peripheral, programs the timing registers and
@@ -305,7 +235,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
 - Failure paths always emit a STOP condition and clear the acknowledge-failure
   flag, leaving the bus usable for the next transfer.
 
-#### Application tasks (`C_src/src/init.cpp`, `C_src/src/sensor.cpp`, `C_src/src/alive.cpp`)
+#### Application tasks
 
 - `Entrypoint` — boot sequence: run the compensation self-test, bring up the I2C1
   bus, register the BMP180 node once, then create and start the reader task.
@@ -326,47 +256,13 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
 - `isqrt32` — integer square root, so the noise statistics need no floating-point
   `printf` support.
 - `bmp180_task_manual` — alternative reader that drives `bmp180_do_measurement`
-  directly instead of going through the device node, for debugging the driver
-  below the `ioctl` layer.
-- `alive_task` — heartbeat task printing `[f] alive` once per second, used to
-  prove the system keeps scheduling during I2C fault-injection tests.
+  directly instead of going through the device node.
+- `alive_task` — heartbeat task printing `[f] alive` once per second.
 - RTEMS configuration: 1 ms tick, 4 tasks, and `CONFIGURE_MAXIMUM_FILE_DESCRIPTORS`
   raised to 8 — the default of 3 is consumed entirely by stdin/stdout/stderr, so
   without this every `open()` of the bus or device node fails with `ENFILE`.
 
-#### Build, flash and tooling
-
-- CMake build (`CMakeLists.txt`, `C_src/CMakeLists.txt`) targeting the
-  `arm-rtems7` toolchain: Cortex-M4, Thumb, hard-float `fpv4-sp-d16`, `-qrtems`,
-  C++17, with a post-build `objcopy` step producing a flashable `.bin`.
-- Per-developer toolchain paths kept out of version control: `local.cmake`
-  (with `local.cmake.example` as template) for CMake and `.env/setup.env` for the
-  shell scripts. The build fails with an explicit message if `RTEMS_LOCAL_PATH`
-  is unset, rather than failing obscurely later.
-- Standalone `C_src/Makefile` with `all` / `sensor.bin` / `flash` / `clean`
-  targets for building without CMake.
-- Helper scripts: `compile.sh` (environment-driven build), `flash.sh` (build and
-  program via OpenOCD at `0x08000000`), `attach_to_device.sh` (serial console).
-- `D_examples/communication_test_module` — minimal heartbeat example kept
-  separate from driver sources, used to validate toolchain and console bring-up
-  independently of the sensor.
-
-#### Documentation
-
-- `C_src/README.md` — driver architecture, `ioctl` surface and task control flow.
-- `C_src/TESTING.md` — six-step validation ladder: datasheet self-test, altitude
-  response (~12 Pa/m), absolute cross-check against METAR QNH, the automated OSS
-  noise sweep and how to read it, I2C fault injection, and temperature
-  cross-check. Includes a pin/console/flash quick-reference table.
-- `B_docs/SETUP.md` — toolchain and environment setup.
-- `B_docs/PIN_CONFIG.md` — BMP180 and CP2102 wiring, plus how to identify and
-  change the BSP console USART.
-- `B_docs/ASSIGMENT.md` — original assignment statement.
-- `A_report/` — LaTeX project report sources.
-
 ### Known limitations
-
-Scope limits of the 1.0.0 design are listed below.
 
 - Only the sequences the BMP180 needs are implemented in the I2C bus driver:
   7-bit addressing, polled transfers, standard-mode 100 kHz. 10-bit addressing,
@@ -378,6 +274,7 @@ Scope limits of the 1.0.0 design are listed below.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.2.1]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.1
 [1.2.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.1.0
 [1.0.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.0.0

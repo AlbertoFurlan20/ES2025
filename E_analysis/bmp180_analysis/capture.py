@@ -16,6 +16,7 @@ at the session header without anyone pressing the board's B2 button.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import select
 import subprocess
@@ -39,12 +40,49 @@ DEFAULT_BAUD = 115200
 OPENOCD_BOARD_CFG = "board/stm32f4discovery.cfg"
 
 
+class PortBusy(Exception):
+    """The serial device is held by another process."""
+
+
+def _port_holder(device: str) -> str | None:
+    """Best-effort description of whatever currently holds @device."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-F", "cp", device],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    pid = name = None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("c"):
+            name = line[1:]
+    return f"{name} (pid {pid})" if pid and name else None
+
+
 def open_serial(device: str, baud: int) -> int:
     """Open @device and apply 8N1 raw termios at @baud to the open descriptor."""
     if baud not in BAUD_CONSTANTS:
         raise ValueError(f"unsupported baud {baud}; known: {sorted(BAUD_CONSTANTS)}")
 
-    fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError as exc:
+        # macOS gives exclusive access to /dev/cu.*, so a `screen` left open on
+        # the console blocks every capture until it is quit. Say so, and name
+        # the culprit, instead of raising a traceback at the operator.
+        if exc.errno != errno.EBUSY:
+            raise
+        holder = _port_holder(device)
+        held_by = f" held by {holder}" if holder else ""
+        raise PortBusy(
+            f"{device} is busy{held_by}.\n"
+            f"  Close it and retry. If it is a screen session: "
+            f"screen -X -S <pid> quit  (or Ctrl-A then \\ in that window)"
+        ) from exc
 
     attrs = termios.tcgetattr(fd)
     attrs[0] = termios.IGNPAR                                  # iflag
@@ -60,6 +98,36 @@ def open_serial(device: str, baud: int) -> int:
 
 
 PROGRESS_BAR_WIDTH = 28
+
+# No `S` record for this long means the run is dead, not merely quiet: the
+# slowest configured mode still emits ~30 samples/s.
+DEFAULT_SILENCE_TIMEOUT = 10.0
+
+# errno values in an `E` record that mean the run can never produce data, so
+# there is nothing to wait for.
+FATAL_ERRNOS = {
+    19: "ENODEV - BMP180 registration failed (chip-id read did not answer)",
+    2: "ENOENT - device node missing",
+}
+
+
+def _fatal_record(line: bytes) -> str | None:
+    """Return a reason string if @line is an unrecoverable error, else None.
+
+    Only `E` records are consulted. A registration failure is reported by the
+    firmware exactly once, at boot, and no sample can follow it.
+    """
+    if not line.startswith(b"E "):
+        return None
+    parts = line.split()
+    if len(parts) < 3:
+        return None
+    try:
+        err = int(parts[2])
+    except ValueError:
+        return None
+    detail = FATAL_ERRNOS.get(err)
+    return f"device reported E {err}: {detail}" if detail else None
 
 
 def _draw_progress(
@@ -84,12 +152,15 @@ def _draw_progress(
     remaining = max(0.0, total_seconds - elapsed)
     rate = samples / elapsed if elapsed > 0 else 0.0
 
+    # \r returns to column 0 and \x1b[K erases to end of line, so each redraw
+    # replaces the previous one in place and leaves no residue even if a later
+    # line is shorter. Only the final draw emits a newline.
     sys.stderr.write(
-        f"\r  [{bar}] {frac * 100:5.1f}%  "
+        f"\r\x1b[K  [{bar}] {frac * 100:5.1f}%  "
         f"{elapsed:6.1f}/{total_seconds:.0f}s  "
         f"-{remaining:5.1f}s  "
         f"{total_bytes / 1024:7.1f} KiB  "
-        f"{samples:6d} samples  {rate:5.1f}/s "
+        f"{samples:6d} samples  {rate:5.1f}/s"
     )
     sys.stderr.write("\n" if final else "")
     sys.stderr.flush()
@@ -115,8 +186,18 @@ def capture(
     out_path: str | Path,
     baud: int = DEFAULT_BAUD,
     reset_cwd: str | Path | None = None,
-) -> tuple[int, int]:
-    """Capture for @seconds into @out_path. Returns (bytes, sample lines)."""
+    silence_timeout: float = DEFAULT_SILENCE_TIMEOUT,
+) -> tuple[int, int, str | None]:
+    """Capture for @seconds into @out_path.
+
+    Returns (bytes, sample lines, abort_reason). @abort_reason is None on a
+    healthy run, otherwise a one-line description and the capture stopped early.
+
+    A capture aborts rather than running to completion when the board is
+    demonstrably not producing data. Sitting out a 150 s window recording a
+    sensor that failed to register wastes the operator's time and leaves a log
+    that looks like a result.
+    """
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -145,12 +226,14 @@ def capture(
 
             total = 0
             live_samples = 0
-            carry = b""          # last byte, so an "S " split across reads still counts
+            pending = b""        # incomplete trailing line, carried between reads
             start = time.time()
             deadline = start + seconds
             next_draw = 0.0
+            last_sample_at = start
+            abort: str | None = None
 
-            while True:
+            while abort is None:
                 now = time.time()
                 if now >= deadline:
                     break
@@ -165,16 +248,34 @@ def capture(
                         chunk = b""
                     if chunk:
                         sink.write(chunk)
+                        sink.flush()
                         total += len(chunk)
-                        live_samples += (carry + chunk).count(b"\nS ")
-                        carry = chunk[-1:]
+
+                        pending += chunk
+                        lines = pending.split(b"\n")
+                        pending = lines.pop()
+                        for line in lines:
+                            if line.startswith(b"S "):
+                                live_samples += 1
+                                last_sample_at = time.time()
+                            else:
+                                abort = _fatal_record(line) or abort
 
                 now = time.time()
-                if now >= next_draw:
-                    _draw_progress(now - start, seconds, total, live_samples)
+                if abort is None and now - last_sample_at > silence_timeout:
+                    abort = (
+                        f"no sample records for {silence_timeout:g}s"
+                        if live_samples
+                        else f"no sample records at all within {silence_timeout:g}s"
+                    )
+
+                if now >= next_draw or abort is not None:
+                    _draw_progress(min(now - start, seconds), seconds, total,
+                                   live_samples, final=abort is not None)
                     next_draw = now + 0.1
 
-            _draw_progress(seconds, seconds, total, live_samples, final=True)
+            if abort is None:
+                _draw_progress(seconds, seconds, total, live_samples, final=True)
     finally:
         os.close(fd)
 
@@ -182,7 +283,7 @@ def capture(
         1 for line in out.read_text(errors="replace").splitlines()
         if line.startswith("S ")
     )
-    return total, samples
+    return total, samples, abort
 
 
 def main() -> int:
@@ -191,6 +292,14 @@ def main() -> int:
     parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--silence-timeout",
+        type=float,
+        default=DEFAULT_SILENCE_TIMEOUT,
+        metavar="SECONDS",
+        help="abort if no sample record arrives for this long "
+             f"(default {DEFAULT_SILENCE_TIMEOUT:g})",
+    )
     parser.add_argument(
         "--reset-from",
         default=None,
@@ -211,9 +320,23 @@ def main() -> int:
     )
 
     print(f"Capturing {args.seconds:g}s from {args.device} at {args.baud} -> {out}")
-    total, samples = capture(
-        args.device, args.seconds, out, args.baud, args.reset_from
-    )
+    try:
+        total, samples, abort = capture(
+            args.device, args.seconds, out, args.baud, args.reset_from,
+            args.silence_timeout,
+        )
+    except PortBusy as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    if abort is not None:
+        print(f"ABORTED: {abort}", file=sys.stderr)
+        print(f"  {total} bytes, {samples} sample records written to {out}",
+              file=sys.stderr)
+        print("  Check the sensor wiring (I2C1: PB6=SCL, PB7=SDA, addr 0x77) "
+              "and that it is powered.", file=sys.stderr)
+        return 1
+
     print(f"Done. {total} bytes, {samples} sample records.")
     print(out)
     return 0
