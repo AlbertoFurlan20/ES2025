@@ -30,6 +30,9 @@ DROP_COLUMNS = ["t_us", "count"]
 class Session:
     """One boot-to-reset run of the device."""
 
+    def __init__(self):
+        pass
+
     schema: str = ""
     fw: str = ""
     temp_ms: int = 0
@@ -141,3 +144,4 @@ def parse_file(path: str | Path) -> list[Session]:
     """Parse a captured telemetry file."""
     with open(path, "r", errors="replace") as handle:
         return parse_stream(handle)
+    return None

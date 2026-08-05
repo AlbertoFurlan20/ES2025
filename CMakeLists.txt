@@ -60,5 +60,4 @@ include_directories(
 )
 
 # Add each module as a subdirectory
-add_subdirectory("D_examples/communication_test_module")
 add_subdirectory("C_src")
