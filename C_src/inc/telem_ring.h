@@ -12,7 +12,6 @@
 #define ES2025_TELEM_RING_H
 
 #include <atomic>
-#include <cstdint>
 
 /**
  * @brief Record kind. Maps to the single-character wire tag.

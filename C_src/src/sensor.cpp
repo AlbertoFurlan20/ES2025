@@ -1,8 +1,6 @@
 #include <rtems.h>
 #include <cerrno>
 #include <cstdio>
-#include <cstdint>
-180
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
