@@ -13,10 +13,15 @@ expire up to one millisecond early, causing the driver to occasionally read a
 stale value. The prediction was made *before* any measurement, and it named a
 specific, falsifiable symptom.
 
-The project then built a telemetry path, captured two datasets, and found the
-predicted symptom at 5.4 standard deviations in both — appearing at a *different*
-oversampling mode each run, which is what distinguishes an intermittent fault
+The project then built a telemetry path and captured four datasets. The
+predicted symptom appears at up to 5.7 standard deviations — at a *different*
+oversampling mode each time, which is what distinguishes an intermittent fault
 from a systematic one.
+
+One of the four runs shows **no** failure at all and would have passed the
+acceptance test for a fix that had not been applied. That accident is the most
+useful result in the set: it demonstrates empirically why a single passing
+capture cannot certify a stochastic defect as repaired.
 
 The methodological point is the reusable one: the defect is invisible to the
 console output the driver originally produced, and would have been invisible to
@@ -80,9 +85,14 @@ i.e. 6, 5, 4 and 3 Pa).
 
 ## Method
 
-Two independent 150 s captures, taken 83 minutes apart. Each sweeps oversampling
-0→3 with 500 back-to-back samples per mode after 3 discarded warm-up samples,
-then runs continuously at OSS=2.
+Four independent 150 s captures. Runs 1 and 2 are 83 minutes apart; runs 3 and 4
+are three minutes apart, from the same binary on the same board. Each sweeps
+oversampling 0→3 with 500 back-to-back samples per mode after 3 discarded warm-up
+samples, then runs continuously at OSS=2.
+
+The conversion constants are byte-identical across all four — verified with
+`git diff` against the v1.1.0 tag — so every run observes the same unfixed
+defect.
 
 Statistics use **only the sweep blocks**. This matters: the profile visits OSS=2
 twice, and the second visit spans 111 s rather than 10 s, so it carries real
@@ -99,30 +109,34 @@ roughly ±0.17 Pa at n = 500.
 
 RMS pressure noise, sweep blocks only, against the datasheet reference:
 
-| oss | Run 1 | Run 2 | datasheet | z, Run 1 | z, Run 2 |
-|-----|-------|-------|-----------|----------|----------|
-| 0 | 5.305 | 5.627 | 6.0 | −4.14 | −2.09 |
-| 1 | 5.698 | 4.678 | 5.0 | +3.87 | −2.17 |
-| 2 | 5.525 | 4.824 | 4.0 | **+8.72** | **+5.40** |
-| 3 | 3.947 | 3.964 | 3.0 | +7.58 | +7.68 |
+| oss | Run 1 | Run 2 | Run 3 | Run 4 | datasheet |
+|-----|-------|-------|-------|-------|-----------|
+| 0 | 5.305 | 5.627 | 5.154 | 4.962 | 6.0 |
+| 1 | 5.698 | 4.678 | 5.016 | 5.375 | 5.0 |
+| 2 | 5.525 | 4.824 | 3.496 | 3.992 | 4.0 |
+| 3 | 3.947 | 3.964 | 3.037 | 3.553 | 3.0 |
 
 The sharper test is per transition. Each oversampling step should reduce noise by
 about 1.0 Pa:
 
-| Transition | Run 1 observed | z vs expected | Run 2 observed | z vs expected |
-|------------|----------------|---------------|----------------|---------------|
-| 0 → 1 | **+0.393** | **+5.65** | −0.949 | +0.22 |
-| 1 → 2 | −0.173 | +3.29 | **+0.146** | **+5.39** |
-| 2 → 3 | −1.578 | −2.69 | −0.860 | +0.71 |
+| Transition | Run 1 | Run 2 | Run 3 | Run 4 |
+|------------|-------|-------|-------|-------|
+| 0 → 1 | **+5.65** | +0.22 | +3.49 | **+5.73** |
+| 1 → 2 | +3.29 | **+5.39** | −2.11 | −1.56 |
+| 2 → 3 | −2.69 | +0.71 | +2.19 | +2.28 |
+
+*(z-scores against the expected −1.0 Pa per step; a well-behaved transition sits
+near 0. Standard error on the difference of two sample standard deviations is
+≈ 0.247 Pa at n = 500.)*
 
 ## Interpretation
 
-**In each run exactly one transition fails catastrophically, and it is a
-different transition each time.** Run 1 breaks at 0→1 (z = +5.65); Run 2 breaks
-at 1→2 (z = +5.39). Both are around 5.4 standard deviations — not marginal.
+**The failure moves between runs.** Run 1 breaks at 0→1 (z = +5.65), run 2 at
+1→2 (z = +5.39), run 4 at 0→1 again (z = +5.73). Run 3 breaks nowhere: its worst
+transition is +3.49 and its noise falls monotonically across every mode.
 
 Equally important, **the transitions that are not spoiled match the datasheet
-almost exactly**: Run 2's 0→1 lands at z = +0.22 and its 2→3 at z = +0.71. The
+almost exactly**: run 2's 0→1 lands at z = +0.22 and its 2→3 at z = +0.71. The
 sensor is capable of meeting specification. Something intermittently prevents it.
 
 That asymmetry is the core of the argument. A *systematic* cause — a miswired
@@ -168,10 +182,19 @@ instead of sleeping a fixed time, which removes the class of defect rather than
 padding against it.
 
 Because the defect is intermittent, **a single passing run does not demonstrate
-a fix**: Run 2 already contains two transitions that match the datasheet
-perfectly while the run as a whole is still defective. Acceptance therefore
-requires at least two independent captures, both monotonic, both within the
-datasheet reference. The full criteria are recorded in
+a fix**. This is not a theoretical caution — run 3 is a worked counterexample.
+
+Run 3 is monotonic across every oversampling step and sits at or below the
+datasheet noise figure in all four modes. It satisfies the primary acceptance
+criterion for the fix. **The fix had not been applied**: the conversion constants
+were byte-identical to the previous release, still 5/5/8/14/26 ms, still every
+one at the datasheet maximum. Run 4, three minutes later from the same binary,
+fails 0→1 at 5.7 standard deviations.
+
+Had the timing fix been applied and run 3 been the only capture taken, the defect
+would have been recorded as closed while remaining entirely present. Acceptance
+therefore requires at least two independent captures, both monotonic, both within
+the datasheet reference. The full criteria are recorded in
 `E_analysis/BASELINE.md`.
 
 ## What generalises
@@ -183,8 +206,12 @@ datasheet reference. The full criteria are recorded in
   would have been unfalsifiable — there would have been no before-picture, and
   the fix would have rested on the argument alone.
 - **Repeat the experiment.** One run showed the anomaly at 0→1 and would have
-  supported a wrong, mode-specific hypothesis. The second run is what identified
-  the fault as intermittent.
+  supported a wrong, mode-specific hypothesis. The second run identified the
+  fault as intermittent. The third produced a clean result the defect did not
+  deserve, and the fourth confirmed the defect was still there — which is the
+  clearest possible argument that a stochastic fault cannot be cleared by a
+  single passing test. The acceptance rule was written before run 3 existed;
+  run 3 is what turned it from prudence into evidence.
 - **Watch what the analysis silently pools.** The first analysis merged two
   visits to the same setting whose durations differed by a factor of eleven,
   contaminating a mode comparison with atmospheric drift. Reporting each block's

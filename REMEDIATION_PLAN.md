@@ -31,7 +31,6 @@ four summary rows, v1.0.0 was instrumented with the structured telemetry stream
 and a real dataset captured, so every later gate is a numerical comparison
 instead of a judgement call.
 
-**Plan:** [`docs/superpowers/plans/2026-08-03-phase0-telemetry-baseline.md`](docs/superpowers/plans/2026-08-03-phase0-telemetry-baseline.md)
 **Design:** [`B_docs/TELEMETRY_DESIGN.md`](B_docs/TELEMETRY_DESIGN.md)
 **Result:** [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md)
 
