@@ -115,15 +115,13 @@ bool telem_push_error(const uint64_t t_us, const int32_t err)
     return g_ring.push(rec);
 }
 
-rtems_task telem_emitter_task(rtems_task_argument ignored)
+rtems_task telem_emitter_task(const rtems_task_argument ignored)
 {
     (void)ignored;
 
     while (true)
     {
-        telem_rec_t rec{};
-
-        if (g_ring.pop(rec))
+        if (telem_rec_t rec{}; g_ring.pop(rec))
         {
             emit_record(rec);
             continue;

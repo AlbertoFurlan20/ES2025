@@ -71,7 +71,7 @@ namespace
 
     int stm32f4_i2c1_transfer(i2c_bus* bus, i2c_msg* msgs, const uint32_t msg_count)
     {
-        auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
+        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
         volatile stm32f4_i2c* r = self->regs;
 
         // Wait for an idle bus (bounded).
@@ -86,7 +86,7 @@ namespace
 
         for (uint32_t i = 0; i < msg_count; ++i)
         {
-            i2c_msg* m = &msgs[i];
+            const i2c_msg* m = &msgs[i];
             const bool is_read = (m->flags & I2C_M_RD) != 0;
             const bool last = (i + 1 == msg_count);
 
@@ -166,7 +166,7 @@ namespace
                 m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN-1
                 rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE);
                 if (rc != 0) goto fail;
-                m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN
+                m->buf[k] = static_cast<uint8_t>(r->dr); // DataN
             }
         }
 
@@ -180,11 +180,11 @@ namespace
 
     int stm32f4_i2c1_set_clock(i2c_bus* bus, const unsigned long clock)
     {
-        auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
+        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
         volatile stm32f4_i2c* r = self->regs;
 
-        const uint32_t pclk1 = STM32F4_PCLK1;
-        const uint32_t freq_mhz = pclk1 / 1000000u;
+        constexpr uint32_t pclk1 = STM32F4_PCLK1;
+        constexpr uint32_t freq_mhz = pclk1 / 1000000u;
 
         uint32_t ccr = pclk1 / (static_cast<uint32_t>(clock) * 2u); // standard mode
         if (ccr < 4u) ccr = 4u;
@@ -200,7 +200,7 @@ namespace
 
     void stm32f4_i2c1_destroy(i2c_bus* bus)
     {
-        auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
+        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
         self->regs->cr1 &= ~STM32F4_I2C_CR1_PE;
         i2c_bus_destroy_and_free(bus);
     }

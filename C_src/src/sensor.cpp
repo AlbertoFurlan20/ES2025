@@ -38,11 +38,10 @@ rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
         return;
     }
 
-    constexpr int SWEEP_SAMPLES = 500; // per oversampling mode
-    constexpr int WARMUP = 3;          // discarded settling samples
-
     for (int oss = 0; oss <= 3; ++oss)
     {
+        constexpr int WARMUP = 3;
+        constexpr int SWEEP_SAMPLES = 500;
         bmp180_oss_t mode = static_cast<bmp180_oss_t>(oss);
         if (ioctl(fd, BMP180_IOCTL_SET_OSS, &mode) != 0)
         {

@@ -45,7 +45,7 @@ void setupTask(rtems_id task_id, const char title[4], const int prio,
     }
 }
 
-rtems_task Entrypoint(rtems_task_argument ignored)
+rtems_task Entrypoint(const rtems_task_argument ignored)
 {
     (void)ignored;
 
