@@ -15,20 +15,6 @@
 namespace bmp
 {
     /**
-     * @brief Util to write onto registers
-     */
-    static int bmp180_write_reg(const i2c_dev* dev,
-                                uint8_t reg,
-                                uint8_t value);
-
-    /**
-     * @brief Util to read from registers
-     */
-    static int bmp180_read_regs(const i2c_dev* dev,
-                                uint8_t reg,
-                                uint8_t* dst,
-                                uint16_t len);
-    /**
      * @brief Loads the calibration values in the device node
      *
      * @param self device node
@@ -36,60 +22,6 @@ namespace bmp
      * @return 0 if no errors, error code elsewhere
      */
     int bmp180_load_calibration(bmp180_dev_t* self);
-
-    /**
- * @brief Reads the uncompensated temperature value from the sensor
- *
- * @param self the device node you're reading
- * @param ut_out ptr to save the uncompensated pressure value to
- *
- * @details Steps:
- *          1. Trigger pressure measurement
- *          2. Wait for conversion (max 4.5 ms, we wait 5 ms)
- *          3. Read 16-bit result from 0xF6 (MSB) and 0xF7 (LSB)
- *
- * @return 0 if the read is successful, error code otherwise
- */
-    static int bmp180_read_ut(const bmp180_dev_t* self, int32_t* ut_out);
-
-    /**
- * @brief Reads the uncompensated pressure value from the sensor
- *
- * @param self the device node you're reading
- * @param up_out ptr to save the uncompensated pressure value to
- *
- * @details Steps:
- *          1. Trigger pressure measurement
- *          2. Wait for conversion
- *          3. Read 19-bit raw value: MSB (0xF6), LSB (0xF7), XLSB (0xF8)
- *
- * @return 0 if the read is successful, error code otherwise
- */
-    static int bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out);
-
-    /**
- * @name Bosch compensation algorithm [PP 15 docs]
- *
- * @brief Perform compensation on raw temperature and pressure readings, computing "true" values in physical units.
- *
- * @details Steps:
- *          1. Temperature compensation
- *          2. Pressure compensation
- *
- * @param cal the calibration parameters
- * @param ut the raw temperature
- * @param up the raw pressure
- * @param oss the oversampling setting
- * @param temp_cdeg_out ptr to save the temperature to
- * @param pressure_pa_out ptr to save the pression to
- */
-    static void bmp180_compensate(
-        const bmp180_calib_t* cal,
-        int32_t ut,
-        int32_t up,
-        uint8_t oss,
-        int32_t* temp_cdeg_out,
-        int32_t* pressure_pa_out);
 
     /**
  * @brief Perform a full measurement sequence: trigger temperature and pressure measurements, read raw values, compensate and compute "true" values.
@@ -106,26 +38,6 @@ namespace bmp
  */
     int bmp180_do_measurement(bmp180_dev_t* self,
                               bmp180_measurement_t* result);
-
-    /**
- * @brief Wrapper for ioctl calls to device
- *
- * @param base target device
- * @param cmd command code
- * @param arg eventual args
- *
- * @note Cheatsheet [PP 5.1] tells to wait at least 10 ms after reset before communicating
- *
- * @return 0 or the error code
- */
-    static int bmp180_ioctl(i2c_dev* base, ioctl_command_t cmd, void* arg);
-
-    /**
-     * @brief Wrapper for @see i2c_dev_destroy_and_free method.
-     *
-     * @param base address of the device to destroy
-     */
-    static void bmp180_destroy(i2c_dev* base);
 
     /**
      * @brief Registers a new sensor device node

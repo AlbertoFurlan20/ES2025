@@ -40,7 +40,7 @@ extern const stm32f4_i2c_hw STM32F4_I2C1_HW;
  *        as a modern i2c_bus at @p bus_path (e.g. "/dev/i2c-1").
  *
  * @param bus_path node to publish, e.g. "/dev/i2c-1"
- * @param hw which peripheral, e.g. @see STM32F4_I2C_HW
+ * @param hw which peripheral, e.g. @see STM32F4_I2C1_HW
  *
  * @return 0 on success, -1 on error (errno set).
  */

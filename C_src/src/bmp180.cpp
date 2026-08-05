@@ -9,6 +9,36 @@
 #include "bmp180_ioctls.h"
 #include "bmp_regs.h"
 
+// Internals. Declared here rather than in bmp.h: `static` gives them internal
+// linkage, so a declaration in a shared header hands every *other* includer a
+// symbol it can never link against — which is exactly what -Wunused-function
+// was reporting, once per includer.
+namespace bmp
+{
+    /** @brief Write one register. */
+    static int bmp180_write_reg(const i2c_dev* dev, uint8_t reg, uint8_t value);
+
+    /** @brief Read @p len registers starting at @p reg. */
+    static int bmp180_read_regs(const i2c_dev* dev, uint8_t reg,
+                                uint8_t* dst, uint16_t len);
+
+    /** @brief Read the uncompensated temperature (trigger, wait, read 0xF6-0xF7). */
+    static int bmp180_read_ut(const bmp180_dev_t* self, int32_t* ut_out);
+
+    /** @brief Read the uncompensated pressure (trigger, wait, read 0xF6-0xF8). */
+    static int bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out);
+
+    /** @brief Bosch compensation algorithm, BST-BMP180-DS000-09 section 3.5. */
+    static void bmp180_compensate(const bmp180_calib_t* cal,
+                                  int32_t ut, int32_t up, uint8_t oss,
+                                  int32_t* temp_cdeg_out, int32_t* pressure_pa_out);
+
+    /** @brief ioctl handler installed on the device node. */
+    static int bmp180_ioctl(i2c_dev* base, ioctl_command_t cmd, void* arg);
+
+    /** @brief destroy handler installed on the device node. */
+    static void bmp180_destroy(i2c_dev* base);
+}
 
 static int bmp::bmp180_write_reg(const i2c_dev* dev, const uint8_t reg, const uint8_t value)
 {
