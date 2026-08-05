@@ -16,7 +16,11 @@ compiled but never reachable from `Entrypoint`. B7 is the exception: it needed a
 real fix, because deleting `alive_task` removed the heartbeat its "keep going"
 justification depended on.
 
-The measurement path remains byte-for-byte as in 1.0.0.
+The measurement path remains byte-for-byte as in 1.0.0, and **the build is now
+warning-free**.
+
+Verified on hardware: runs 3 and 4 reproduce the 1.1.0 timing columns
+bit-for-bit, with zero drops, errors or malformed lines.
 
 ### Removed
 
@@ -32,6 +36,8 @@ The measurement path remains byte-for-byte as in 1.0.0.
   in 1.0.0 and deleted in 1.1.0.
 - The three corresponding forward declarations in `init.cpp`.
 - `C_src/src/sensor.cpp` drops from 304 to 94 lines.
+- Seven internal function declarations from `C_src/inc/bmp.h`, which falls from
+  158 to 70 lines and now exposes only what callers actually use.
 
 ### Fixed
 
@@ -41,6 +47,15 @@ The measurement path remains byte-for-byte as in 1.0.0.
   never headerless. Previously the failure printed to a console nobody captures
   and was justified by a heartbeat that no longer ran. Still non-fatal.
 - `-Wunused-parameter` in `Entrypoint`, surfaced by the new warning flags.
+- **I2 — seven functions declared `static` in a shared header.** `static` gives
+  internal linkage, so declaring these in `bmp.h` handed every other includer a
+  symbol it could never link against — reported once per includer, 14 warnings in
+  total. Declarations moved into `bmp180.cpp`. **The build now compiles with zero
+  warnings under `-Wall -Wextra`.**
+- **`Session` dataclass in `E_analysis/bmp180_analysis/parse.py`** had an
+  explicit `def __init__(self): pass`, which overrides the generated constructor
+  and made `Session(schema=..., fw=...)` raise `TypeError`. 20 of 24 Python tests
+  were failing. Removed.
 
 ### Changed
 
@@ -49,15 +64,16 @@ The measurement path remains byte-for-byte as in 1.0.0.
   read `RTEMS_LOCAL_PATH` from `local.cmake`, overridable from the environment.
   `.env/setup.env` is no longer consulted, and the scripts call the toolchain by
   absolute path rather than trusting `PATH`.
-- **`-Wall -Wextra` on every build path (I4).** Not `-Werror`: the surviving list
-  is triaged first. It is currently 7 unique warnings, all I2 (functions declared
-  `static` in a shared header), which R3 addresses.
+- **`-Wall -Wextra` on every build path (I4).** The list it produced was triaged
+  and then emptied — see I2 under *Fixed*. Still not `-Werror`, but the tree is
+  clean, so promoting it is now a one-line change rather than a project.
 - **`-std=c++17` pinned (I17c).** The target build previously compiled C++17
   only because this GCC defaults to `gnu++17`.
 - **`-fno-exceptions -fno-rtti` (I7).** `bmp180_task_manual` was the only
   `throw`/`catch`/`<stdexcept>` user in the tree. Measured saving: 520 bytes of
   `.text` at `-O0`.
-- Telemetry session header reports `fw=1.2.0`.
+- Telemetry session header reports `fw=1.2.0`, from a single `DRIVER_VERSION`
+  constant in `init.cpp` rather than a string literal at the call site.
 - `C_src/TESTING.md` rewritten — sections 4 and 5 described the sweep task and
   heartbeat, both deleted in 1.1.0, and told the reader to swap back to
   `bmp180_task`. Now describes the telemetry stream, host-side analysis, and the
@@ -71,8 +87,24 @@ The measurement path remains byte-for-byte as in 1.0.0.
 - The `[latent]` bug category is now empty. Every bug that remains — B1, B8, B9,
   B11, B12, B13 — is on the live boot path. B12 is an unreachable *branch* in
   live code, not dead code, and needs a guard added rather than code removed.
-- No post-R1 hardware capture yet. R1 changes no runtime behaviour, so one should
-  reproduce the 1.1.0 reference numbers; take it before starting R2.
+- **A capture passed the R2 acceptance gate with B1 fully unfixed.** Run 3 is
+  monotonic across every oversampling step and sits at or below the datasheet
+  noise figure in all four modes, while `bmp_regs.h` remained byte-identical to
+  `v1.1.0`. Run 4, three minutes later from the same binary, fails the 0→1
+  transition at 5.73σ. A single-capture acceptance test would therefore have
+  certified an unfixed defect as repaired. The two-run requirement was written
+  on theoretical grounds; it now has a worked counterexample behind it.
+
+### Added
+
+- **`stm32f4_i2c_hw` — the I2C driver is no longer hardcoded to I2C1.** Base
+  address, RCC clock index, alternate-function number and the SCL/SDA pins move
+  into a config struct; `stm32f4_register_i2c1(path)` becomes
+  `stm32f4_register_i2c(path, hw)`. The transfer engine was already
+  instance-agnostic — roughly 220 of its 250 lines read the register block
+  through a pointer — so only the bring-up path changed. `i2c1.{h,cpp}` renamed
+  to `i2c.{h,cpp}` to match. Adding I2C2 or I2C3 is now one constant and one
+  call.
 
 ## [1.1.0] - 2026-08-04
 

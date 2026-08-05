@@ -118,7 +118,7 @@ With the read loop running, briefly disconnect **SDA**.
 
 - **Expect:** reads fail and emit `E <t_us> <errno>` records rather than
   stopping. No system freeze, because every I2C poll is bounded by
-  `I2C_POLL_BUDGET` in `i2c1.cpp`.
+  `I2C_POLL_BUDGET` in `i2c.cpp`.
 - The stream continues: `bmp180_telemetry_task` logs the error and retries
   indefinitely; it does not self-delete on consecutive failures.
 - Reconnect and reset to resume.
