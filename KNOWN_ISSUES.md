@@ -1,22 +1,48 @@
 # Known Issues
 
-**Audited against: v1.1.0 (2026-08-04).** Line citations re-verified after Phase 0
-instrumentation moved `sensor.cpp` and `init.cpp`. The measurement path itself is
-unchanged since v1.0.0, so every defect in it stands as originally described.
+**Audited against: v1.2.0 (2026-08-05).** The measurement path is still unchanged
+since v1.0.0, so every defect in it stands as originally described. R1 removed
+dead code and tightened the build; it changed no runtime behaviour beyond the
+registration-failure record described under B7.
 
 Audit of `C_src` against the BMP180 datasheet (BST-BMP180-DS000-09 Rev 2.5),
 ST RM0090, and the RTEMS I2C framework sources
 (`cpukit/dev/i2c/i2c-bus.c`, `cpukit/dev/i2c/i2c-dev.c`).
 
-## Changes since the v1.0.0 audit
+## Changes in v1.2.0 (R1)
+
+**13 issues resolved: B2, B3, B4, B5, B6, B7, B10, B14, I3, I4, I7, I17c, I18.**
+Each is annotated in place below rather than deleted, so the reasoning stays
+readable and every existing cross-link keeps working.
+
+| Change | Closes |
+|--------|--------|
+| Deleted `bmp180_task_manual` | B2, B3, B4, B5, B10, B14, and I7 as a side effect |
+| Deleted `bmp180_task` | B6 |
+| Deleted `alive_task` and `alive.cpp` | the phantom heartbeat behind B7 |
+| `E`-record on registration failure | B7 |
+| All build paths read `local.cmake` | I3 |
+| `-Wall -Wextra` everywhere | I4 |
+| `-std=c++17` pinned | I17c |
+| `-fno-exceptions -fno-rtti` | I7 |
+
+**Eight of fourteen bugs are now closed**, and the `[latent]` category is empty —
+there is no longer any unreachable code in the tree. The six remaining bugs are
+all `[live]`: B1, B8, B9, B11, B12, B13.
+
+Warning triage from the new `-Wall -Wextra` build, as the R1 gate required: one
+`-Wunused-parameter` in `Entrypoint` (fixed immediately) and seven instances of
+[I2](#i2--seven-functions-declared-static-in-a-shared-header). The gate also
+predicted [B11](#b11--setuptask-takes-rtems_id-by-value-live) would surface — it
+did not. Passing `rtems_id` by value is legal C++ and no warning class covers
+it, so B11 still needs the fix it always did.
+
+## Changes in v1.1.0
 
 | Issue | Change |
 |-------|--------|
 | [B1](#b1--conversion-wait-can-expire-before-the-conversion-finishes-live) | **Confirmed on hardware.** No longer a prediction — measured in two independent captures. See [`E_analysis/BASELINE.md`](E_analysis/BASELINE.md). |
-| [B6](#b6--negative-temperatures-print-malformed-latent-since-v110) | One of its two sites was deleted with the sweep task. Now `[latent]`, not `[live]`. |
-| [B7](#b7--registration-failure-leaves-a-silently-dead-board-live) | The commented-out heartbeat it referred to is gone entirely, so the misleading comment now points at nothing at all. |
 | [I11](#i11--resolved-in-v110--sweep-task-ran-on-rtems_minimum_stack_size) | **Resolved.** `setupTask` takes an explicit stack size; both tasks get 4 KB. |
-| [I18](#i18--dead-code-carried-in-the-build) | `bmp180_oss_sweep_task`, `isqrt32` and `heartbeat_task_id` deleted. Three dead functions remain. |
 | I17b, I17c | **New**, found during Phase 0 implementation. |
 
 Two sections: **BUGS** (defects — the code does something other than what it
@@ -33,7 +59,9 @@ Severity meaning:
 
 Legend: **[live]** = on the default boot path
 (`Entrypoint` → `bmp180_telemetry_task` + `telem_emitter_task`).
-**[latent]** = in code not currently reached, so it cannot bite until that code is wired in.
+**[latent]** = in code not currently reached, so it cannot bite until that code is
+wired in. As of v1.2.0 no `[latent]` issue remains open; the tags are kept on
+resolved entries as a record of what they were.
 
 ---
 
@@ -82,6 +110,8 @@ corrupts the noise figures the OSS sweep task is built to measure — inflated
 
 ### B2 — `bmp180_task_manual` passes the device path as the bus path [latent]
 
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
+
 `C_src/src/sensor.cpp:112-114`
 
 ```cpp
@@ -96,6 +126,8 @@ means that ioctl hits the BMP180 handler, which returns `-ENOTTY` for anything
 outside its four commands. Registration can never succeed on this path.
 
 ### B3 — Null-pointer dereference in the registration failure handler [latent]
+
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
 
 `C_src/src/sensor.cpp:177-184`
 
@@ -112,6 +144,8 @@ this handler with `dev_ptr == nullptr`, and the cleanup faults. The error path
 is strictly worse than no error path at all.
 
 ### B4 — Use-after-free: device freed while its `/dev` node is still published [latent]
+
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
 
 `C_src/src/sensor.cpp:160`, `C_src/src/sensor.cpp:215`
 
@@ -134,6 +168,8 @@ directly on a registered device.
 
 ### B5 — Debug output is gated on `#ifndef DEBUG` (inverted) [latent]
 
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
+
 `C_src/src/sensor.cpp:132`, `C_src/src/sensor.cpp:207`
 
 The blocks that dump calibration coefficients and exception text are wrapped in
@@ -143,6 +179,8 @@ it is. `DEBUG` is not defined anywhere in `CMakeLists.txt`, `Makefile`, or
 the opposite.
 
 ### B6 — Negative temperatures print malformed [latent since v1.1.0]
+
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task`, the last remaining site, in R1. The telemetry emitter never splits a signed value, so the whole class of error is gone from the tree.
 
 `C_src/src/sensor.cpp:71-74`
 
@@ -164,6 +202,8 @@ splits it, so the whole class of error cannot occur there — the split now happ
 host-side in `plot.py`, in Python, where `/` and `%` floor consistently.
 
 ### B7 — Registration failure leaves a silently dead board [live]
+
+> **RESOLVED in v1.2.0 (R1).** Registration failure now pushes `E <t_us> 19` (`ENODEV`) into the telemetry stream before the tasks start, and the comment promising a heartbeat is gone. Failure is non-fatal but no longer silent.
 
 `C_src/src/init.cpp:63-74` vs `C_src/src/init.cpp:80`
 
@@ -219,6 +259,8 @@ calibration data or a wild `UT` from [B1](#b1--conversion-wait-can-expire-before
 
 ### B10 — `int` return compared against `rtems_status_code` [latent]
 
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
+
 `C_src/src/sensor.cpp:157`
 
 ```cpp
@@ -270,6 +312,8 @@ the optimiser being entitled to reorder these loads.
 
 ### B14 — Missing newline in the calibration print [latent]
 
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual` in R1. The function no longer exists.
+
 `C_src/src/sensor.cpp:135`
 
 `printf("Calibration is loaded: %d", cal_is_loaded);` — no `\n`, so the line runs
@@ -319,6 +363,8 @@ These are implementation details: move them into an anonymous namespace inside
 
 ### I3 — Three divergent toolchain-path mechanisms
 
+> **RESOLVED in v1.2.0 (R1).** All three build paths — root `CMakeLists.txt`, `C_src/Makefile`, `C_src/compile.sh` (and `flash.sh`) — now read `RTEMS_LOCAL_PATH` from `local.cmake` alone, with an environment override. `.env/setup.env` is no longer consulted.
+
 `C_src/Makefile:1-2`, `C_src/compile.sh:6`, `CMakeLists.txt:10-14`
 
 - `Makefile` hardcodes `/Users/albertofurlan/Developer/PoliMi/...`
@@ -330,6 +376,8 @@ build on any other machine — including this one, where the toolchain actually
 lives under `/Volumes/POLI/tools/`. Collapse onto one mechanism.
 
 ### I4 — No warning flags anywhere in the build
+
+> **RESOLVED in v1.2.0 (R1).** `-Wall -Wextra` added to all three build paths. Not `-Werror`: the surviving list is 7 unique warnings, all [I2](#i2--seven-functions-declared-static-in-a-shared-header), which R3 fixes.
 
 `CMakeLists.txt:36-44`, `C_src/Makefile:8-16`, `C_src/compile.sh:13-19`
 
@@ -359,6 +407,8 @@ Include `<utility>`. `bits/` headers carry no stability guarantee across
 libstdc++ versions and do not exist at all on libc++.
 
 ### I7 — C++ exceptions used to signal ordinary error codes
+
+> **RESOLVED in v1.2.0 (R1).** Closed by deleting `bmp180_task_manual`, the only `throw`/`catch`/`<stdexcept>` user in the tree. `-fno-exceptions -fno-rtti` are now set on all build paths; measured saving 520 bytes of `.text` at `-O0`.
 
 `C_src/src/sensor.cpp:4`, `C_src/src/sensor.cpp:190-208`
 
@@ -488,6 +538,8 @@ touches the ioctl payload struct, so it is a breaking change — batch it with
 
 ### I17c — Target build does not pin the C++ standard
 
+> **RESOLVED in v1.2.0 (R1).** `-std=c++17` pinned in `C_src/Makefile` and `C_src/compile.sh`. The root CMake build already set `CMAKE_CXX_STANDARD 17`.
+
 `C_src/compile.sh:13-19`, `C_src/Makefile:8-16`
 
 Neither passes `-std=`. The code uses C++17 features — `if` with initializer in
@@ -505,6 +557,8 @@ alongside [I3](#i3--three-divergent-toolchain-path-mechanisms).
 `ES2025_*` include guards. Pick one.
 
 ### I18 — Dead code carried in the build
+
+> **RESOLVED in v1.2.0 (R1).** All three dead functions deleted — `bmp180_task`, `bmp180_task_manual` and `alive_task` (with `alive.cpp`). `sensor.cpp` drops from 304 to 94 lines.
 
 `alive_task`, `bmp180_task` and `bmp180_task_manual` are all compiled but
 unreachable. All three latent High-severity bugs above
@@ -525,21 +579,24 @@ above remain.
 
 ## Summary
 
-As of v1.1.0:
+As of v1.2.0:
 
-| Section | High | Medium | Low | Open | Resolved |
-|---------|------|--------|-----|------|----------|
-| BUGS | 4 | 5 | 5 | 14 | 0 |
-| IMPROVEMENTS | 4 | 7 | 9 | 19 | 1 (I11) |
+| Section | Open | Resolved |
+|---------|------|----------|
+| BUGS | 6 | 8 (B2, B3, B4, B5, B6, B7, B10, B14) |
+| IMPROVEMENTS | 15 | 5 (I3, I4, I7, I11, I17c) |
 
-Of the 14 bugs, **5 are on the live boot path** (B1, B7, B8, B9, B11) and 9 are
-latent in unwired code. B6 moved from live to latent when Phase 0 deleted the
-sweep task.
+**All six remaining bugs are `[live]`** — B1, B8, B9, B11, B12, B13. The
+`[latent]` category is empty: R1 deleted every unreachable function in the tree,
+so there is no longer anywhere for a bug to hide from execution. B12 is the
+exception that proves it: it is an unreachable *branch* inside live code, not
+dead code, and needs a length guard added rather than anything removed.
 
-**Six of the nine latent bugs live in one function.** B2, B3, B4, B5, B10 and B14
-are all inside `bmp180_task_manual`, which is compiled but never reached.
-Deleting it closes all six without debugging any — which is why R1 does that
-before R2 touches anything that matters.
+R1 closed eight bugs while debugging none of them. Six went with
+`bmp180_task_manual`, one with `bmp180_task`, and B7 was fixed by making
+registration failure visible in the telemetry stream. This was the cheapest
+round in the plan by a wide margin, and it is now spent — every bug left costs
+real work.
 
 [B1](#b1--conversion-wait-can-expire-before-the-conversion-finishes-live) remains
 the one to fix first, and is no longer a matter of judgement: it is **confirmed

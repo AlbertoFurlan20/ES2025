@@ -5,6 +5,85 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-05
+
+Cleanup release — remediation round R1, the "build safety net". Deletes every
+unreachable function in the tree and tightens all build paths.
+
+**Eight of fourteen known bugs close here, none of them by being debugged.** Six
+lived in `bmp180_task_manual` and one in `bmp180_task`; both functions were
+compiled but never reachable from `Entrypoint`. B7 is the exception: it needed a
+real fix, because deleting `alive_task` removed the heartbeat its "keep going"
+justification depended on.
+
+The measurement path remains byte-for-byte as in 1.0.0.
+
+Plan: [`REMEDIATION_PLAN.md`](REMEDIATION_PLAN.md#r1--build-safety-net--complete-v120-2026-08-05).
+
+### Removed
+
+- **`bmp180_task_manual`** — bypassed the `/dev` node entirely, driving
+  `bmp180_do_measurement` on the raw device struct. It could never have been
+  wired up as written: it passed the device path as the bus path, and
+  `Entrypoint` already registers that node. Closes B2, B3, B4, B5, B10, B14.
+- **`bmp180_task`** — periodic reader that read through the device node
+  correctly and then `printf`-ed at a fixed 1 Hz. Superseded by
+  `bmp180_telemetry_task`, which is the same consumer emitting parseable records
+  at the sensor's own rate. Closes B6, its last remaining site.
+- **`alive_task` and `alive.cpp`** — heartbeat whose call site was commented out
+  in 1.0.0 and deleted in 1.1.0.
+- The three corresponding forward declarations in `init.cpp`.
+- `C_src/src/sensor.cpp` drops from 304 to 94 lines.
+
+### Fixed
+
+- **B7 — registration failure is no longer silent.** A failed chip-id read at
+  boot now pushes `E <t_us> 19` (`ENODEV`) into the telemetry stream before the
+  tasks start, and the session header moved above registration so the stream is
+  never headerless. Previously the failure printed to a console nobody captures
+  and was justified by a heartbeat that no longer ran. Still non-fatal.
+- `-Wunused-parameter` in `Entrypoint`, surfaced by the new warning flags.
+
+### Changed
+
+- **One source of truth for the toolchain path (I3).** The root
+  `CMakeLists.txt`, `C_src/Makefile`, `C_src/compile.sh` and `C_src/flash.sh` all
+  read `RTEMS_LOCAL_PATH` from `local.cmake`, overridable from the environment.
+  `.env/setup.env` is no longer consulted, and the scripts call the toolchain by
+  absolute path rather than trusting `PATH`.
+- **`-Wall -Wextra` on every build path (I4).** Not `-Werror`: the surviving list
+  is triaged first. It is currently 7 unique warnings, all I2 (functions declared
+  `static` in a shared header), which R3 addresses.
+- **`-std=c++17` pinned (I17c).** The target build previously compiled C++17
+  only because this GCC defaults to `gnu++17`.
+- **`-fno-exceptions -fno-rtti` (I7).** `bmp180_task_manual` was the only
+  `throw`/`catch`/`<stdexcept>` user in the tree. Measured saving: 520 bytes of
+  `.text` at `-O0`.
+- Telemetry session header reports `fw=1.2.0`.
+- `C_src/TESTING.md` rewritten — sections 4 and 5 described the sweep task and
+  heartbeat, both deleted in 1.1.0, and told the reader to swap back to
+  `bmp180_task`. Now describes the telemetry stream, host-side analysis, and the
+  `E`-record fault signature.
+
+### Notes
+
+- **B11 did not surface under `-Wall -Wextra`**, though R1's gate predicted it
+  would. Passing `rtems_id` by value is legal C++ and no warning class covers it.
+  The prediction was wrong; B11 still needs its own fix in R2.
+- The `[latent]` bug category is now empty. Every bug that remains — B1, B8, B9,
+  B11, B12, B13 — is on the live boot path. B12 is an unreachable *branch* in
+  live code, not dead code, and needs a guard added rather than code removed.
+- No post-R1 hardware capture yet. R1 changes no runtime behaviour, so one should
+  reproduce the 1.1.0 reference numbers; take it before starting R2.
+
+### Added
+
+- [`B_docs/ARCHITECTURE.md`](B_docs/ARCHITECTURE.md) — on-device data flow from
+  sensor to consumer, and why the telemetry ring sits beside the measurement path
+  rather than inside it. Documents the driver/consumer split as the target
+  architecture, and why I1 becomes a blocker once a second consumer opens the
+  device.
+
 ## [1.1.0] - 2026-08-04
 
 Instrumentation release. Adds a structured measurement stream and host-side
@@ -288,5 +367,6 @@ work tracked against this release, see [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.2.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.1.0
 [1.0.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.0.0

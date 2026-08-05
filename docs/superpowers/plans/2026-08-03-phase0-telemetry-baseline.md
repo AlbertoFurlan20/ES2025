@@ -1915,7 +1915,7 @@ Create `E_analysis/README.md`:
 # BMP180 telemetry analysis
 
 Host-side tooling for the measurement stream defined in
-[`../B_docs/TELEMETRY_DESIGN.md`](../B_docs/TELEMETRY_DESIGN.md).
+[`B_docs/TELEMETRY_DESIGN.md`](../../../B_docs/TELEMETRY_DESIGN.md).
 
 ## Install
 

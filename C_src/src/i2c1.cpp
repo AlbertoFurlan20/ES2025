@@ -6,7 +6,7 @@
 // Clock math assumes STM32F4_PCLK1 (16 MHz on this BSP).
 //
 
-#include <errno.h>
+#include <cerrno>
 
 #include <rtems.h>
 #include <dev/i2c/i2c.h>

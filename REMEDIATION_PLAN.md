@@ -67,17 +67,19 @@ issues, I17b and I17c.
 
 ---
 
-## R1 — Build safety net
+## R1 — Build safety net ✅ COMPLETE (v1.2.0, 2026-08-05)
 
 Nothing here changes runtime behaviour. It exists so the rest of the plan is
 verifiable at all.
 
-| Item | Change |
-|------|--------|
-| [I3](KNOWN_ISSUES.md#i3--three-divergent-toolchain-path-mechanisms) | Collapse the toolchain-path mechanisms onto `local.cmake`. **Partly done in Phase 0** — `C_src/Makefile` and `.env/setup.env` now point at `/Volumes/POLI/tools/`, so the tree builds here. The three-mechanism duplication itself remains. |
-| [I17c](KNOWN_ISSUES.md#i17c--target-build-does-not-pin-the-c-standard) | Pin `-std=c++17` in `compile.sh` and `C_src/Makefile`. Currently they compile C++17 only because this GCC defaults to `gnu++17`. Fold into I3 — same files. |
-| [I4](KNOWN_ISSUES.md#i4--no-warning-flags-anywhere-in-the-build) | Add `-Wall -Wextra` to all build paths. Not `-Werror` yet — the existing warnings must be read before they become fatal. |
-| [I18](KNOWN_ISSUES.md#i18--dead-code-carried-in-the-build) | Delete `bmp180_task_manual`. **This is the highest-value single edit in the plan:** it closes six of the fourteen bugs — B2, B3, B4, B5, B10, B14 — without debugging any of them. |
+| Item | Change | Status |
+|------|--------|--------|
+| [I3](KNOWN_ISSUES.md#i3--three-divergent-toolchain-path-mechanisms) | Collapse the toolchain-path mechanisms onto `local.cmake`. | ✅ All of `CMakeLists.txt`, `Makefile`, `compile.sh` and `flash.sh` now read `RTEMS_LOCAL_PATH` from `local.cmake`, environment-overridable. `.env/setup.env` no longer consulted. |
+| [I17c](KNOWN_ISSUES.md#i17c--target-build-does-not-pin-the-c-standard) | Pin `-std=c++17` in `compile.sh` and `C_src/Makefile`. | ✅ |
+| [I4](KNOWN_ISSUES.md#i4--no-warning-flags-anywhere-in-the-build) | Add `-Wall -Wextra` to all build paths. Not `-Werror` yet. | ✅ |
+| [I18](KNOWN_ISSUES.md#i18--dead-code-carried-in-the-build) | Delete `bmp180_task_manual`. **Highest-value single edit in the plan.** | ✅ Went further: `bmp180_task` and `alive_task` deleted too. Closes B2, B3, B4, B5, B10, B14 **and B6**. |
+| [B7](KNOWN_ISSUES.md#b7--registration-failure-leaves-a-silently-dead-board-live) | Added to the round: deleting `alive_task` would have made registration failure fully silent. | ✅ `E <t_us> 19` (`ENODEV`) now pushed before the tasks start. |
+| [I7](KNOWN_ISSUES.md#i7--c-exceptions-used-to-signal-ordinary-error-codes) | Side effect, as predicted in the note below. | ✅ `-fno-exceptions -fno-rtti` on all paths; 520 bytes of `.text` at `-O0`. |
 
 **Gate:** clean build from a fresh checkout with only `local.cmake` supplied.
 Triage the new warning list — it should surface
@@ -85,17 +87,28 @@ Triage the new warning list — it should surface
 [I2](KNOWN_ISSUES.md#i2--seven-functions-declared-static-in-a-shared-header)
 on its own.
 
-Then flash and capture, and confirm `metrics.per_oss_summary()` still matches the
-Phase 0 reference numbers above. R1 changes no runtime behaviour, so any movement
-beyond run-to-run noise means something was broken, not fixed. The host test
-suites must also stay green: `make -C C_src/tests run` and
-`cd E_analysis && .venv/bin/python -m pytest tests/ -q`.
+**Gate result.** Build clean via both `make` and `compile.sh`, byte-identical
+output (2 774 692 bytes). Warning list: one `-Wunused-parameter` in `Entrypoint`
+(fixed on the spot) and 7 unique instances of I2, which R3 addresses. **B11 did
+not surface** — passing `rtems_id` by value is legal and no warning class covers
+it, so that prediction was wrong and B11 still needs its own fix. Host suites
+green: `test_telem_ring`/`test_telem_fmt` ALL PASS, 24 Python tests pass.
 
-**Note:** deleting `bmp180_task_manual` also removes the only consumer of
+**Outstanding: the post-R1 capture.** Flash and capture, then confirm
+`metrics.per_block_summary()` still matches the Phase 0 reference numbers above —
+R1 changes no runtime behaviour, so any movement beyond run-to-run noise means
+something was broken, not fixed. Not taken yet because the board was not
+connected. **Do this before starting R2**, so R2's comparison has an
+immediately-preceding reference rather than one from two releases back.
+
+The one thing to expect: the stream header now reads `fw=1.2.0`, and a board
+whose sensor fails to register emits `E <t_us> 19` where v1.1.0 emitted nothing.
+
+**Note, now settled:** deleting `bmp180_task_manual` removed the only consumer of
 `bmp180_load_calibration` as a public entry point and the only `<stdexcept>`
-user, which makes [I7](KNOWN_ISSUES.md#i7--c-exceptions-used-to-signal-ordinary-error-codes)
-mostly disappear as a side effect. Confirm no `-fno-exceptions` opportunity is
-missed before closing the round.
+user, so [I7](KNOWN_ISSUES.md#i7--c-exceptions-used-to-signal-ordinary-error-codes)
+did disappear as a side effect. `-fno-exceptions -fno-rtti` are set on every
+build path; the opportunity was taken, not missed.
 
 ---
 
@@ -136,8 +149,6 @@ next reader will otherwise "correct" them back.
 |------|--------|
 | [B8](KNOWN_ISSUES.md#b8--oss-is-not-validated-in-bmp180_register--out-of-bounds-read-live) | Range-check `oss` in `bmp180_register`, reusing the check already in the `SET_OSS` handler. Reject with `RTEMS_INVALID_NUMBER`. |
 | [B9](KNOWN_ISSUES.md#b9--division-by-zero-in-the-compensation-math-live) | Guard `X1 + MD == 0` before the divide in `bmp180_compensate`. |
-| [B6](KNOWN_ISSUES.md#b6--negative-temperatures-print-malformed-latent-since-v110) | Format temperature via `abs()` on the fractional part with an explicit sign on the whole part. Only one site remains (`bmp180_task`) since Phase 0 deleted the other; if R1 also deletes `bmp180_task` this closes for free. |
-| [B7](KNOWN_ISSUES.md#b7--registration-failure-leaves-a-silently-dead-board-live) | Either start `alive_task` or emit an `E` record on registration failure, and delete the comment that promises a heartbeat which no longer exists in any form. Registration failure must not be silent. |
 | [B11](KNOWN_ISSUES.md#b11--setuptask-takes-rtems_id-by-value-live) | `rtems_id*` out-parameter on `setupTask`; drop the dead `constexpr` ids. |
 
 **Gate — this is the one that matters.** The six acceptance criteria are stated
@@ -159,10 +170,9 @@ suggestive but not conclusive. Require monotonicity in both.
 Selftest must still print `PASS` (B9's guard must not perturb the datasheet
 vector).
 
-B6 is no longer testable from the console, since the telemetry stream emits
-`t_cdeg` as one signed integer and never splits it. To verify the fix, cool the
-sensor below 0 °C and confirm `parse.py` reports negative `t_cdeg` values that
-`plot.py` renders as e.g. `-2.4 °C`.
+**B6 and B7 moved to R1** and are already closed. B6 went with `bmp180_task`;
+B7 is now an `E <t_us> 19` (`ENODEV`) record emitted before the tasks start.
+Neither needs anything from this round.
 
 ---
 
@@ -205,5 +215,5 @@ and move the fixed entries out of `KNOWN_ISSUES.md` into the CHANGELOG.
 | Item | Why |
 |------|-----|
 | [I9](KNOWN_ISSUES.md#i9--read_measurement-is-declared-_iow-but-writes-back-to-the-caller) | `_IOW` → `_IOR` changes the encoded command number. Breaking ABI, so it waits for a major bump and should be batched with any other ioctl renumbering. |
-|  [B2](KNOWN_ISSUES.md#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent), [B3](KNOWN_ISSUES.md#b3--null-pointer-dereference-in-the-registration-failure-handler-latent), [B4](KNOWN_ISSUES.md#b4--use-after-free-device-freed-while-its-dev-node-is-still-published-latent), [B5](KNOWN_ISSUES.md#b5--debug-output-is-gated-on-ifndef-debug-inverted-latent), [B10](KNOWN_ISSUES.md#b10--int-return-compared-against-rtems_status_code-latent), [B14](KNOWN_ISSUES.md#b14--missing-newline-in-the-calibration-print-latent) | Closed by deleting `bmp180_task_manual` in R1 — six bugs for one edit. If that task is ever revived, all six must be fixed first. |
+|  [B2](KNOWN_ISSUES.md#b2--bmp180_task_manual-passes-the-device-path-as-the-bus-path-latent), [B3](KNOWN_ISSUES.md#b3--null-pointer-dereference-in-the-registration-failure-handler-latent), [B4](KNOWN_ISSUES.md#b4--use-after-free-device-freed-while-its-dev-node-is-still-published-latent), [B5](KNOWN_ISSUES.md#b5--debug-output-is-gated-on-ifndef-debug-inverted-latent), [B10](KNOWN_ISSUES.md#b10--int-return-compared-against-rtems_status_code-latent), [B14](KNOWN_ISSUES.md#b14--missing-newline-in-the-calibration-print-latent) | **Closed in v1.2.0** by deleting `bmp180_task_manual` — six bugs for one edit, none of them debugged. If that task is ever revived from git history, all six must be fixed first. |
 | [B12](KNOWN_ISSUES.md#b12--zero-length-i2c-message-stalls-for-the-full-poll-budget-latent) | Only reachable if the I2C1 bus gains a second device driver. Revisit then. |
