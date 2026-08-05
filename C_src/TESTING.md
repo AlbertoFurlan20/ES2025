@@ -11,15 +11,25 @@ screen /dev/cu.usbserial-0001 115200    # serial console (cu.*, NOT tty.*)
 # press the BLACK reset (B2) to (re)start; exit screen: Ctrl-A then \
 ```
 
+For anything quantitative, prefer `E_analysis/capture.sh`, which resets the
+target over the ST-Link and writes a timestamped log — no B2 press, and the
+result is a file the Python tooling can parse.
+
 Console is **USART2, 115200 8N1** on **PA2(TX)/PA3(RX)**. Sensor is on **I2C1,
 PB6(SCL)/PB7(SDA)**, addr `0x77`, VCC 3.3 V.
 
 Nominal output once running:
 ```
 [SELFTEST] compensate: T=150 (exp 150)  P=69964 (exp 69964)  -> PASS
+#BMP180 v1 fw=1.2.0 temp_ms=0
 [[DEBUG]] BMP180 registered on /dev/bmp180-0
-Temperature: 24.4 degC   Pressure: 96822 Pa
+S 1043221 244 96822 0
+S 1054220 244 96825 0
 ```
+
+Records are the telemetry wire format, not human prose. `S` is a sample
+(µs, 0.1 °C, Pa, oversampling); `E` is an error (µs, errno); `D` is a drop
+count.
 
 ---
 
@@ -63,49 +73,69 @@ Worked example for **Velate (Varese), h ≈ 480 m**:
 - reading `968.2 hPa / 0.9444 ≈ 1025 hPa`
 - → compare to **Malpensa (LIMC) METAR QNH**; within a few hPa = accurate.
 
-## 4. OSS sweep + noise logger (automated)
+## 4. OSS sweep + noise analysis (automated, host-side)
 
-The `SWEP` task (`bmp180_oss_sweep_task`, wired in `init.cpp`) runs once at
-boot: for each oversampling mode it takes **32 back-to-back samples** and prints
-a summary row, then drops into a normal 1 Hz read loop at `OSS=HIGH_RESOLUTION`.
-Sampling is back-to-back (no inter-sample sleep) so the timing column reflects
-the sensor's conversion time and the noise is not aliased by the 1 s tick.
+`bmp180_telemetry_task` runs at boot: for each oversampling mode it takes **500
+back-to-back samples** after 3 discarded warm-up samples, then settles into a
+continuous run at `OSS=HIGH_RESOLUTION`. Sampling has no inter-sample sleep, so
+consecutive timestamps bound the true acquisition cycle time.
 
-Example output:
+No statistics are computed on the device. The board emits raw records; mean,
+RMS, peak-to-peak and achieved rate are all derived on the host, where they can
+be recomputed without reflashing:
 
-```
-=== BMP180 OSS sweep + noise (32 samples/mode, back-to-back) ===
-OSS  mean_Pa  std_Pa  p2p_Pa  mean_degC  ms/smp
-  0    96820       5      18    24.4          5
-  1    96819       3      11    24.4          8
-  2    96820       2       7    24.4         14
-  3    96821       1       4    24.4         26
-=== sweep done; resuming 1 Hz read at OSS=HIGH_RESOLUTION ===
+```bash
+cd ../E_analysis && ./capture.sh 150
+.venv/bin/python -c "
+import glob
+from bmp180_analysis.parse import parse_file
+from bmp180_analysis import metrics
+s = parse_file(sorted(glob.glob('captures/*.log'))[-1])[-1]
+print(metrics.per_block_summary(s).to_string(index=False))
+"
 ```
 
 How to read it:
 
-- **std_Pa / p2p_Pa** should **decrease** as OSS rises (more oversampling = less
-  noise). If they don't, suspect pull-ups, wiring or power.
-- **ms/smp** should **increase** with OSS (datasheet pressure conversion grows
-  ~4.5 → 25.5 ms).
-- **mean_Pa** should stay ~constant across modes (same true pressure).
-- Stats are integer-only (`isqrt32`) — no float / `printf("%f")` dependency.
+- Use **`per_block_summary()`**, not `per_oss_summary()`. The profile visits
+  `oss=2` twice — a ~10 s sweep block and a ~111 s continuous block — and
+  pooling them lets atmospheric drift inflate that one mode.
+- **rms_pa / p2p_pa** should **decrease** as OSS rises (more oversampling = less
+  noise). If they don't, see below.
+- **median_interval_us** should **increase** with OSS (datasheet pressure
+  conversion grows ~4.5 → 25.5 ms).
+- **mean_pa** should stay ~constant across modes (same true pressure).
 
-Tunables at the top of `bmp180_oss_sweep_task`: `N` (samples/mode), `WARMUP`
-(discarded settling samples). To run the plain 1 Hz reader without the sweep,
-swap `bmp180_oss_sweep_task` back to `bmp180_task` in `init.cpp`.
+**Known result:** noise does *not* currently fall monotonically. This is B1,
+confirmed intermittent across two captures and scheduled for R2. Do not treat
+a non-monotonic sweep as a wiring fault until R2 has landed.
+
+Tunables at the top of `bmp180_telemetry_task`: `SWEEP_SAMPLES`, `WARMUP`.
 
 ## 5. Fault injection (driver robustness)
 
 With the read loop running, briefly disconnect **SDA**.
 
-- **Expect:** reads return IO errors (`perror` logs them) and the heartbeat
-  `[f] alive` **keeps printing** — no system freeze, because every I2C poll is
-  bounded by `I2C_POLL_BUDGET` in `i2c1.cpp`.
-- The plain `bmp180_task` reader additionally self-deletes after >3 consecutive
-  failures ("Too many consecutive failures"); the `SWEP` reader logs and retries.
+- **Expect:** reads fail and emit `E <t_us> <errno>` records rather than
+  stopping. No system freeze, because every I2C poll is bounded by
+  `I2C_POLL_BUDGET` in `i2c1.cpp`.
+- The stream continues: `bmp180_telemetry_task` logs the error and retries
+  indefinitely; it does not self-delete on consecutive failures.
 - Reconnect and reset to resume.
+
+Registration failure is also visible in the stream: if the chip-id read at boot
+fails, `init.cpp` emits `E <t_us> 19` (`ENODEV`) before the tasks start. A
+capture keeps the stream and nothing else, so a board that came up without its
+sensor is identifiable after the fact.
+
+Count errors and drops from a capture with:
+
+```bash
+grep -c '^E ' captures/<file>.log      # errors
+grep -c '^D ' captures/<file>.log      # dropped records
+```
+
+Both should be **0** on a healthy run.
 
 ## 6. Temperature cross-check
 
@@ -123,5 +153,7 @@ within ~1 °C of a reference thermometer at steady state.
 | Sensor addr | `0x77` |
 | Chip ID reg/val | `0xD0` → `0x55` |
 | Flash | `make flash` (OpenOCD, stm32f4discovery.cfg) |
+| Capture | `E_analysis/capture.sh <seconds>` (resets via ST-Link) |
 | Serial (macOS) | `/dev/cu.usbserial-*` (never `tty.*`) |
-| Reset | black B2 button |
+| Reset | black B2 button, or ST-Link via `capture.sh` |
+| Host tests | `make -C tests run` |

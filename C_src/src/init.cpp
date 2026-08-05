@@ -1,5 +1,6 @@
 #include <rtems.h>
 #include <rtems/bspIo.h>
+#include <cerrno>
 #include <cstdio>
 
 #include "constants.h"
@@ -7,9 +8,6 @@
 #include "bmp.h"
 #include "telemetry.h"
 
-rtems_task alive_task(rtems_task_argument ignored);
-rtems_task bmp180_task(rtems_task_argument ignored);
-rtems_task bmp180_task_manual(rtems_task_argument ignored);
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 
 template <typename TaskType>
@@ -47,6 +45,8 @@ void setupTask(rtems_id task_id, const char title[4], const int prio,
 
 rtems_task Entrypoint(rtems_task_argument ignored)
 {
+    (void)ignored;
+
     printf("%s %s %s\n", DEBUG_TITLE, STARTING_TITLE, SENSOR_TASK_TITLE);
 
     // Hardware-independent check of the Bosch compensation math.
@@ -59,6 +59,10 @@ rtems_task Entrypoint(rtems_task_argument ignored)
         rtems_task_suspend(RTEMS_SELF);
     }
 
+    // Session header goes out synchronously, before any record can be emitted -
+    // including the registration error below, so the stream is never headerless.
+    telem_emit_header("1.2.0", 0);
+
     // Register the BMP180 device node once on top of the I2C1 bus. This is the
     // first real I2C traffic: a chip-id read. An IO error here now means the
     // sensor wiring/pins, not the software layers below.
@@ -66,9 +70,14 @@ rtems_task Entrypoint(rtems_task_argument ignored)
         bmp::bmp180_register("/dev/i2c-1", "/dev/bmp180-0", BMP180_OSS_HIGH_RESOLUTION);
     if (reg_outcome != RTEMS_SUCCESSFUL or dev == nullptr)
     {
+        // Non-fatal, but it must not be silent: a capture keeps the telemetry
+        // stream and nothing else, so the failure is recorded there rather than
+        // left to console output nobody is reading. Queued now, drained once the
+        // emitter starts a few lines below.
+        telem_push_error(telem_now_us(), ENODEV);
+
         printf("[DEBUG] [ERROR] BMP180 registration failed (%s)\n",
                rtems_status_text(reg_outcome));
-        // Keep going: the heartbeat still proves the system is alive.
     }
     else
     {
@@ -77,9 +86,6 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 
     constexpr rtems_id sensor_task_id = 0;
     constexpr rtems_id emitter_task_id = 0;
-
-    // Session header goes out synchronously, before any record can be emitted.
-    telem_emit_header("1.1.0", 0);
 
     // Acquisition runs at higher priority (lower number) than emission, so the
     // console can never delay a measurement. The emitter gets the CPU during the
