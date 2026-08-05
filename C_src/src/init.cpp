@@ -8,7 +8,7 @@
 #include "bmp.h"
 #include "telemetry.h"
 
-#define DRIVER_VERSION "1.2.0"
+#define DRIVER_VERSION "1.2.1"
 
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 

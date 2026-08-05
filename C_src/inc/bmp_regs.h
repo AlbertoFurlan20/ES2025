@@ -36,11 +36,24 @@
 #define BMP180_CHIP_ID_EXPECTED     0x55u
 // endregion
 
-// Conversion times (ms)
-#define BMP180_CONV_TIME_TEMP_MS        5u
-#define BMP180_CONV_TIME_PRESS_OSS0_MS  5u
-#define BMP180_CONV_TIME_PRESS_OSS1_MS  8u
-#define BMP180_CONV_TIME_PRESS_OSS2_MS  14u
-#define BMP180_CONV_TIME_PRESS_OSS3_MS  26u
+// Conversion times (ms).
+//
+// These deliberately exceed the datasheet maxima (4.5 / 4.5 / 7.5 / 13.5 /
+// 25.5 ms, BST-BMP180-DS000-09 Table 3) by one tick. Do not "correct" them back.
+//
+// rtems_task_wake_after(n) blocks for between n-1 and n ticks: the call can land
+// anywhere inside the current tick, so the first one is partial. At a 1 ms tick
+// the old values could therefore expire up to 1 ms early, and reading 0xF6 mid
+// conversion returns the *previous* result - no error, no NAK, just a silently
+// stale sample. Each constant is now datasheet_max + 1 tick, so even the
+// worst-case n-1 wait clears the specification with ~0.5 ms of margin.
+//
+// Costs 1 ms per measurement. R3 replaces the fixed wait with SCO-bit polling,
+// which removes the class of defect instead of padding against it.
+#define BMP180_CONV_TIME_TEMP_MS        6u
+#define BMP180_CONV_TIME_PRESS_OSS0_MS  6u
+#define BMP180_CONV_TIME_PRESS_OSS1_MS  9u
+#define BMP180_CONV_TIME_PRESS_OSS2_MS  15u
+#define BMP180_CONV_TIME_PRESS_OSS3_MS  27u
 
 #endif //ES2025_BMP_REGS_H
