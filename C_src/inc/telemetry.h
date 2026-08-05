@@ -14,8 +14,6 @@
 #ifndef ES2025_TELEMETRY_H
 #define ES2025_TELEMETRY_H
 
-#include <cstdint>
-
 #include <rtems.h>
 
 /**

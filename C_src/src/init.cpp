@@ -8,6 +8,8 @@
 #include "bmp.h"
 #include "telemetry.h"
 
+#define DRIVER_VERSION "1.2.0"
+
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 
 template <typename TaskType>
@@ -61,7 +63,7 @@ rtems_task Entrypoint(rtems_task_argument ignored)
 
     // Session header goes out synchronously, before any record can be emitted -
     // including the registration error below, so the stream is never headerless.
-    telem_emit_header("1.2.0", 0);
+    telem_emit_header(DRIVER_VERSION, 0);
 
     // Register the BMP180 device node once on top of the I2C1 bus. This is the
     // first real I2C traffic: a chip-id read. An IO error here now means the
