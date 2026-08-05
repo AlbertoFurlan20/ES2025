@@ -4,7 +4,7 @@
 #include <cstdio>
 
 #include "constants.h"
-#include "i2c1.h"
+#include "i2c.h"
 #include "bmp.h"
 #include "telemetry.h"
 
@@ -55,7 +55,7 @@ rtems_task Entrypoint(rtems_task_argument ignored)
     bmp::bmp180_selftest();
 
     // Bring up the hardware I2C1 bus the BMP180 driver depends on.
-    if (stm32f4_register_i2c1("/dev/i2c-1") != 0)
+    if (stm32f4_register_i2c("/dev/i2c-1", STM32F4_I2C1_HW) != 0)
     {
         printf("[DEBUG] [ERROR] Failed to register I2C1 bus, killing init...\n");
         rtems_task_suspend(RTEMS_SELF);

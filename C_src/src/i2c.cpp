@@ -16,19 +16,21 @@
 #include <bsp/io.h>        // stm32f4_gpio_* + STM32F4_GPIO_AF_I2C1
 #include <bsp/rcc.h>       // stm32f4_rcc_set_clock + STM32F4_RCC_I2C1
 
-// I2C1 peripheral base = STM32F4_BASE (0x00) + 0x40005400. Declared locally
-// instead of via <bsp/stm32f4.h>, which transitively pulls a header that is
-// invalid in C++ (a struct field named 'or', a reserved operator token).
+#include "i2c.h"          // own header, so declarations are checked here
+
+// Peripheral base addresses are written out below rather than taken from
+// <bsp/stm32f4.h>: that umbrella header transitively pulls stm32f4xxxx_tim.h,
+// which declares a struct field named 'or' — a reserved operator token in C++,
+// so it does not compile here. Everything else needed comes from the narrower
+// BSP headers included above. (-fno-operator-names would also work, but it
+// disables and/or/not as operator spellings across the whole translation unit,
+// which is a large language change to buy back one constant.)
 
 namespace
 {
     // Bounded poll budget so a missing/stuck sensor returns an error instead of
     // hanging the whole RTEMS system.
     constexpr uint32_t I2C_POLL_BUDGET = 100000u;
-
-    // I2C1 register block (APB1 @ 0x40005400).
-    volatile stm32f4_i2c* const STM32F4_I2C1_REGS =
-        reinterpret_cast<volatile stm32f4_i2c*>(0x40005400u);
 
     struct stm32f4_i2c1_bus
     {
@@ -203,28 +205,41 @@ namespace
         i2c_bus_destroy_and_free(bus);
     }
 
-    void i2c1_pins_and_clock_init()
+    /**
+     * @brief Mux the SCL/SDA pins to the peripheral and gate its clock on.
+     *
+     * @details Both pins must be AF, open-drain (I2C is wired-AND) with a
+     *          pull-up. Configured as one range, so SCL and SDA must be adjacent
+     *          pins on the same bank — true for every I2C mapping this driver
+     *          exposes.
+     */
+    void i2c_pins_and_clock_init(const stm32f4_i2c_hw& hw)
     {
-        // PB6 (SCL) and PB7 (SDA): AF4, open-drain, internal pull-up.
         stm32f4_gpio_config cfg;
         cfg.value = 0;
-        cfg.fields.pin_first = STM32F4_GPIO_PIN(1, 6); // GPIOB pin 6
-        cfg.fields.pin_last = STM32F4_GPIO_PIN(1, 7);  // GPIOB pin 7
+        cfg.fields.pin_first = hw.scl;
+        cfg.fields.pin_last = hw.sda;
         cfg.fields.mode = STM32F4_GPIO_MODE_AF;
         cfg.fields.otype = STM32F4_GPIO_OTYPE_OPEN_DRAIN;
         cfg.fields.ospeed = STM32F4_GPIO_OSPEED_50_MHZ;
         cfg.fields.pupd = STM32F4_GPIO_PULL_UP;
         cfg.fields.output = 0;
-        cfg.fields.af = STM32F4_GPIO_AF_I2C1;
+        cfg.fields.af = hw.af;
 
-        stm32f4_gpio_set_clock(STM32F4_GPIO_PIN(1, 6), true); // enable GPIOB clock
+        stm32f4_gpio_set_clock(hw.scl, true); // enable the GPIO bank clock
         stm32f4_gpio_set_config(&cfg);
 
-        stm32f4_rcc_set_clock(STM32F4_RCC_I2C1, true); // enable I2C1 peripheral clock
+        stm32f4_rcc_set_clock(hw.rcc, true); // enable the peripheral clock
     }
 }
 
-int stm32f4_register_i2c1(const char* bus_path)
+
+const stm32f4_i2c_hw STM32F4_I2C1_HW{
+    0x40005400u, STM32F4_RCC_I2C1, STM32F4_GPIO_AF_I2C1,
+    STM32F4_GPIO_PIN(1, 6), STM32F4_GPIO_PIN(1, 7)};   // PB6 / PB7
+
+
+int stm32f4_register_i2c(const char* bus_path, const stm32f4_i2c_hw& hw)
 {
     auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(
         i2c_bus_alloc_and_init(sizeof(stm32f4_i2c1_bus)));
@@ -233,9 +248,9 @@ int stm32f4_register_i2c1(const char* bus_path)
         return -1;
     }
 
-    self->regs = STM32F4_I2C1_REGS;
+    self->regs = reinterpret_cast<volatile stm32f4_i2c*>(hw.base);
 
-    i2c1_pins_and_clock_init();
+    i2c_pins_and_clock_init(hw);
 
     // Software reset the peripheral before configuring it.
     self->regs->cr1 = STM32F4_I2C_CR1_SWRST;
