@@ -1,4 +1,4 @@
-# Remediation Plan — v1.1.0 → v1.2.0
+# Remediation Plan — v1.1.0 → v1.x.x
 
 Schedule for working off [KNOWN_ISSUES.md](KNOWN_ISSUES.md). Four rounds, each
 with an explicit verification gate that must pass before the next round starts.
@@ -79,6 +79,8 @@ verifiable at all.
 | [I18](KNOWN_ISSUES.md#i18--dead-code-carried-in-the-build) | Delete `bmp180_task_manual`. **Highest-value single edit in the plan.** | ✅ Went further: `bmp180_task` and `alive_task` deleted too. Closes B2, B3, B4, B5, B10, B14 **and B6**. |
 | [B7](KNOWN_ISSUES.md#b7--registration-failure-leaves-a-silently-dead-board-live) | Added to the round: deleting `alive_task` would have made registration failure fully silent. | ✅ `E <t_us> 19` (`ENODEV`) now pushed before the tasks start. |
 | [I7](KNOWN_ISSUES.md#i7--c-exceptions-used-to-signal-ordinary-error-codes) | Side effect, as predicted in the note below. | ✅ `-fno-exceptions -fno-rtti` on all paths; 520 bytes of `.text` at `-O0`. |
+| [I2](KNOWN_ISSUES.md#i2--seven-functions-declared-static-in-a-shared-header) | Pulled forward from R3 — `-Wall` reported it 14 times and it was cheaper to fix than to carry. | ✅ Declarations moved out of `bmp.h` (158 → 70 lines). Build is warning-free. |
+| — | Not on the original list: the I2C driver was hardcoded to I2C1. | ✅ `stm32f4_i2c_hw` config struct; `stm32f4_register_i2c(path, hw)`. Files renamed `i2c1.{h,cpp}` → `i2c.{h,cpp}`. |
 
 **Gate:** clean build from a fresh checkout with only `local.cmake` supplied.
 Triage the new warning list — it should surface
@@ -88,20 +90,31 @@ on its own.
 
 **Gate result.** Build clean via both `make` and `compile.sh`, byte-identical
 output (2 774 692 bytes). Warning list: one `-Wunused-parameter` in `Entrypoint`
-(fixed on the spot) and 7 unique instances of I2, which R3 addresses. **B11 did
+(fixed on the spot) and 7 unique instances of I2 — both fixed here, so the tree
+now compiles warning-free and I2 came out of R3 early. **B11 did
 not surface** — passing `rtems_id` by value is legal and no warning class covers
 it, so that prediction was wrong and B11 still needs its own fix. Host suites
 green: `test_telem_ring`/`test_telem_fmt` ALL PASS, 24 Python tests pass.
 
-**Outstanding: the post-R1 capture.** Flash and capture, then confirm
-`metrics.per_block_summary()` still matches the Phase 0 reference numbers above —
-R1 changes no runtime behaviour, so any movement beyond run-to-run noise means
-something was broken, not fixed. Not taken yet because the board was not
-connected. **Do this before starting R2**, so R2's comparison has an
-immediately-preceding reference rather than one from two releases back.
+**Hardware gate: passed.** Runs 3 and 4 (see
+[`E_analysis/BASELINE.md`](E_analysis/BASELINE.md)), 150 s each, three minutes
+apart:
 
-The one thing to expect: the stream header now reads `fw=1.2.0`, and a board
-whose sensor fails to register emits `E <t_us> 19` where v1.1.0 emitted nothing.
+| Criterion | Result |
+|-----------|--------|
+| `median_interval_us` unchanged | ✅ `10999 / 13999 / 19999 / 31998` — bit-identical to runs 1 and 2 |
+| `mean_pa` within tolerance | ✅ 16 Pa from run 2, well inside ±100 |
+| Drops / errors / malformed | ✅ 0 / 0 / 0 in both |
+| `fw=` reports the new build | ✅ `1.2.0` |
+
+Identical timing across a refactor that rewrote the I2C bring-up path is the
+substantive result: the parameterised `stm32f4_i2c_hw` configuration produces
+exactly the same peripheral setup as the hardcoded constants it replaced.
+
+**Run 3 passed R2's acceptance gate with B1 unfixed.** Monotonic noise, every
+mode at or below datasheet, `bmp_regs.h` byte-identical to `v1.1.0`. Run 4 fails
+0→1 at 5.73σ. Treat this as a hard warning when R2 is evaluated: **two runs are
+the minimum, and three would be better.**
 
 **Note, now settled:** deleting `bmp180_task_manual` removed the only consumer of
 `bmp180_load_calibration` as a public entry point and the only `<stdexcept>`
@@ -182,7 +195,7 @@ sweep as the regression test.
 
 | Item | Change | Notes |
 |------|--------|-------|
-| [I2](KNOWN_ISSUES.md#i2--seven-functions-declared-static-in-a-shared-header) | Move the seven `static` helpers into an anonymous namespace in `bmp180.cpp`; strip from `bmp.h`. | Pure refactor. Sweep output must be byte-identical to R2. |
+| ~~[I2](KNOWN_ISSUES.md#i2--seven-functions-declared-static-in-a-shared-header)~~ | **Done in R1.** Declarations moved out of `bmp.h` into `bmp180.cpp`. | ✅ |
 | [I1](KNOWN_ISSUES.md#i1--a-measurement-is-not-atomic-on-the-bus) | Wrap the whole `bmp180_do_measurement` sequence in `i2c_bus_obtain`/`i2c_bus_release`, and guard `self->oss`. | The mutex is recursive, so the nested per-transfer locks are safe. Verify by running two reader tasks concurrently — without this, they interleave conversions. |
 | [I5](KNOWN_ISSUES.md#i5--poll-the-sco-bit-instead-of-sleeping-a-fixed-time) | Poll `ctrl_meas` bit 5, using the R2 padded delay as the timeout. | Supersedes the R2 padding. `ms/smp` should now *drop* toward typical-case timings while `p2p_Pa` stays flat — that is the success signal. |
 | [B4](KNOWN_ISSUES.md#b4--use-after-free-device-freed-while-its-dev-node-is-still-published-latent) / [I15](KNOWN_ISSUES.md#i15--no-teardown-path) | Add a real teardown that goes through `unlink(dev_path)`, and exercise it once so the destroy handlers stop being dead code. | Only meaningful if teardown is actually called; otherwise fold into R4 as a comment. |

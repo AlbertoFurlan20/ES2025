@@ -38,7 +38,7 @@ flowchart TD
         COMP["bmp180_compensate()"]
     end
 
-    subgraph bus["Bus driver — i2c1.cpp"]
+    subgraph bus["Bus driver — i2c.cpp"]
         XFER["i2c_bus_do_transfer<br/>(mutex per transfer)"]
     end
 

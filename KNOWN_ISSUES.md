@@ -11,7 +11,7 @@ ST RM0090, and the RTEMS I2C framework sources
 
 ## Changes in v1.2.0 (R1)
 
-**13 issues resolved: B2, B3, B4, B5, B6, B7, B10, B14, I3, I4, I7, I17c, I18.**
+**14 issues resolved: B2, B3, B4, B5, B6, B7, B10, B14, I2, I3, I4, I7, I17c, I18.**
 Each is annotated in place below rather than deleted, so the reasoning stays
 readable and every existing cross-link keeps working.
 
@@ -31,8 +31,9 @@ there is no longer any unreachable code in the tree. The six remaining bugs are
 all `[live]`: B1, B8, B9, B11, B12, B13.
 
 Warning triage from the new `-Wall -Wextra` build, as the R1 gate required: one
-`-Wunused-parameter` in `Entrypoint` (fixed immediately) and seven instances of
-[I2](#i2--seven-functions-declared-static-in-a-shared-header). The gate also
+`-Wunused-parameter` in `Entrypoint` and seven instances of
+[I2](#i2--seven-functions-declared-static-in-a-shared-header). Both were fixed in
+this release, so the build is now warning-free. The gate also
 predicted [B11](#b11--setuptask-takes-rtems_id-by-value-live) would surface — it
 did not. Passing `rtems_id` by value is legal C++ and no warning class covers
 it, so B11 still needs the fix it always did.
@@ -288,7 +289,7 @@ at the call site is dead.
 
 ### B12 — Zero-length I2C message stalls for the full poll budget [latent]
 
-`C_src/src/i2c1.cpp:112-124`, `C_src/src/i2c1.cpp:146-168`
+`C_src/src/i2c.cpp:112-124`, `C_src/src/i2c.cpp:146-168`
 
 An `i2c_msg` with `len == 0` falls into the write path (waits `BTF` that never
 arrives) or the N>2 read path (waits `RxNE` that never arrives), burning all
@@ -349,6 +350,8 @@ failure, but it is the one that will be most expensive to retrofit later.
 
 ### I2 — Seven functions declared `static` in a shared header
 
+> **RESOLVED in v1.2.0 (R1).** Declarations moved from `bmp.h` into `bmp180.cpp`, where the definitions live. `bmp.h` falls from 158 to 70 lines and exposes only `bmp180_register`, `bmp180_selftest`, `bmp180_load_calibration` and `bmp180_do_measurement`. Build is warning-free.
+
 `C_src/inc/bmp.h:20-128`
 
 `bmp180_write_reg`, `bmp180_read_regs`, `bmp180_read_ut`, `bmp180_read_up`,
@@ -377,7 +380,7 @@ lives under `/Volumes/POLI/tools/`. Collapse onto one mechanism.
 
 ### I4 — No warning flags anywhere in the build
 
-> **RESOLVED in v1.2.0 (R1).** `-Wall -Wextra` added to all three build paths. Not `-Werror`: the surviving list is 7 unique warnings, all [I2](#i2--seven-functions-declared-static-in-a-shared-header), which R3 fixes.
+> **RESOLVED in v1.2.0 (R1).** `-Wall -Wextra` added to all three build paths. The list it produced was triaged and then emptied — see [I2](#i2--seven-functions-declared-static-in-a-shared-header). The tree compiles clean, so promoting to `-Werror` is now a one-line change.
 
 `CMakeLists.txt:36-44`, `C_src/Makefile:8-16`, `C_src/compile.sh:13-19`
 
@@ -427,7 +430,7 @@ below already uses plain return codes; the task layer should match.
 
 ### I8 — `I2C_POLL_BUDGET` is an iteration count, not a timeout
 
-`C_src/src/i2c1.cpp:27`
+`C_src/src/i2c.cpp:27`
 
 100 000 iterations is a different wall-clock duration at every optimisation
 level and clock configuration, so the bound is not reviewable against any I2C
@@ -493,7 +496,7 @@ header that defines the driver's public ioctl ABI. It belongs with the task code
 
 ### I14 — No I2C bus recovery sequence
 
-`C_src/src/i2c1.cpp`
+`C_src/src/i2c.cpp`
 
 If a slave is reset mid-transfer it can hold SDA low indefinitely, and the
 peripheral will report `BUSY` forever. Every transfer then returns `-EBUSY` until
@@ -502,7 +505,7 @@ to nine pulses until SDA releases, then issue a STOP and re-init.
 
 ### I15 — No teardown path
 
-`C_src/src/bmp180.cpp`, `C_src/src/i2c1.cpp`
+`C_src/src/bmp180.cpp`, `C_src/src/i2c.cpp`
 
 Nothing ever unlinks `/dev/bmp180-0` or `/dev/i2c-1`. Fine for a
 boot-and-run-forever image, but it means the destroy handlers are dead code that
@@ -584,7 +587,7 @@ As of v1.2.0:
 | Section | Open | Resolved |
 |---------|------|----------|
 | BUGS | 6 | 8 (B2, B3, B4, B5, B6, B7, B10, B14) |
-| IMPROVEMENTS | 15 | 5 (I3, I4, I7, I11, I17c) |
+| IMPROVEMENTS | 14 | 6 (I2, I3, I4, I7, I11, I17c) |
 
 **All six remaining bugs are `[live]`** — B1, B8, B9, B11, B12, B13. The
 `[latent]` category is empty: R1 deleted every unreachable function in the tree,
