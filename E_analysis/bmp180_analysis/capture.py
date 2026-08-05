@@ -59,6 +59,42 @@ def open_serial(device: str, baud: int) -> int:
     return fd
 
 
+PROGRESS_BAR_WIDTH = 28
+
+
+def _draw_progress(
+    elapsed: float,
+    total_seconds: float,
+    total_bytes: int,
+    samples: int,
+    final: bool = False,
+) -> None:
+    """Redraw the in-place progress line on stderr.
+
+    stderr, not stdout, so that `capture.sh > somewhere` keeps a clean output
+    path. Skipped entirely when stderr is not a terminal, since a redirected log
+    full of carriage returns is worse than no progress at all.
+    """
+    if not sys.stderr.isatty():
+        return
+
+    frac = 1.0 if total_seconds <= 0 else min(1.0, elapsed / total_seconds)
+    filled = int(round(frac * PROGRESS_BAR_WIDTH))
+    bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
+    remaining = max(0.0, total_seconds - elapsed)
+    rate = samples / elapsed if elapsed > 0 else 0.0
+
+    sys.stderr.write(
+        f"\r  [{bar}] {frac * 100:5.1f}%  "
+        f"{elapsed:6.1f}/{total_seconds:.0f}s  "
+        f"-{remaining:5.1f}s  "
+        f"{total_bytes / 1024:7.1f} KiB  "
+        f"{samples:6d} samples  {rate:5.1f}/s "
+    )
+    sys.stderr.write("\n" if final else "")
+    sys.stderr.flush()
+
+
 def reset_target(cwd: str | Path) -> bool:
     """Pulse the target reset via OpenOCD. Returns True on success."""
     try:
@@ -103,22 +139,42 @@ def capture(
                 # and a flush here would discard exactly the line the parser
                 # needs to start a session. The input buffer was already flushed
                 # in open_serial(), which is the right place for it.
+                print("  resetting target over ST-Link...", file=sys.stderr, flush=True)
                 if not reset_target(reset_cwd):
                     print("warning: reset failed; capturing mid-run", file=sys.stderr)
 
             total = 0
-            deadline = time.time() + seconds
-            while time.time() < deadline:
-                ready, _, _ = select.select([fd], [], [], 0.5)
-                if not ready:
-                    continue
-                try:
-                    chunk = os.read(fd, 65536)
-                except (BlockingIOError, OSError):
-                    continue
-                if chunk:
-                    sink.write(chunk)
-                    total += len(chunk)
+            live_samples = 0
+            carry = b""          # last byte, so an "S " split across reads still counts
+            start = time.time()
+            deadline = start + seconds
+            next_draw = 0.0
+
+            while True:
+                now = time.time()
+                if now >= deadline:
+                    break
+
+                # Wake often enough to keep the progress line moving even when
+                # the board is silent, but never past the deadline.
+                ready, _, _ = select.select([fd], [], [], min(0.2, deadline - now))
+                if ready:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except (BlockingIOError, OSError):
+                        chunk = b""
+                    if chunk:
+                        sink.write(chunk)
+                        total += len(chunk)
+                        live_samples += (carry + chunk).count(b"\nS ")
+                        carry = chunk[-1:]
+
+                now = time.time()
+                if now >= next_draw:
+                    _draw_progress(now - start, seconds, total, live_samples)
+                    next_draw = now + 0.1
+
+            _draw_progress(seconds, seconds, total, live_samples, final=True)
     finally:
         os.close(fd)
 
