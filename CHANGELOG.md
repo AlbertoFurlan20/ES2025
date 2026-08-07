@@ -6,6 +6,45 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-07
+
+Remediation round R2 complete. Three live-path bugs fixed; with B1 from 1.2.1,
+every bug that was reachable on the boot path is now closed except B12 and B13.
+
+### Fixed
+
+- **B8 — `oss` was not validated in `bmp180_register`.** The `SET_OSS` ioctl
+  range-checked its argument but the registration entry point stored `oss`
+  straight into the device. `bmp180_read_up` then indexes two 4-element tables
+  with it, so an out-of-range value — trivial to pass, since `bmp180_oss_t` is a
+  plain unscoped enum — read past both and wrote a garbage control byte to the
+  sensor. Registration now rejects it with `RTEMS_INVALID_NUMBER` before
+  allocating anything. Both entry points share one `bmp180_oss_is_valid()`
+  predicate rather than duplicating the comparison.
+- **B9 — division by zero in the compensation math.** The datasheet formula
+  divides by `X1 + MD` with no guard. The calibration sanity check rejects
+  all-zero and all-ones coefficients but cannot rule out a runtime `X1` that
+  cancels `MD`. On Cortex-M4 the outcome depends on `DIV_0_TRP` in `SCB->CCR`:
+  either a silent zero or a UsageFault. `bmp180_compensate` now returns `EIO`
+  instead, propagated through `bmp180_do_measurement` to the ioctl, which already
+  maps a non-zero result to `-EIO`. The datasheet selftest still prints `PASS`,
+  so the guard does not perturb the reference vector.
+- **B11 — `setupTask` took `rtems_id` by value.** `rtems_task_create` filled a
+  local copy the caller never saw, so no task could be deleted, suspended or
+  signalled from `Entrypoint`. Now an `rtems_id*` out-parameter, and the two dead
+  `constexpr` ids at the call site are real variables that receive the ids.
+
+### Notes
+
+- Verified across three consecutive 150 s captures. **Pressure noise falls
+  monotonically with oversampling in all three** — the first time that has held
+  across consecutive runs; it managed 1 of 4 pre-fix and 1 of 2 in the first
+  post-fix pair. Intervals exactly 13/16/22/34 ms, zero drops, errors or
+  malformed lines throughout.
+- Noise still does not reach the datasheet figure, by up to 0.87 Pa — **7 cm** of
+  altitude. That is the environmental floor, fitted at 0.5–2.4 Pa over the same
+  runs, not a firmware limit.
+
 ## [1.2.1] - 2026-08-05
 
 First release to change the measurement path since 1.0.0.
@@ -274,6 +313,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.3.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.3.0
 [1.2.1]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.1
 [1.2.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.1.0

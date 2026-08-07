@@ -15,6 +15,19 @@
 // was reporting, once per includer.
 namespace bmp
 {
+    /**
+     * @brief True if @p oss names one of the four oversampling modes.
+     *
+     * @details Single definition of the range check, used by both entry points
+     *          that accept an oversampling setting from a caller
+     *          (@see bmp180_register and the SET_OSS ioctl).
+     */
+    constexpr bool bmp180_oss_is_valid(const bmp180_oss_t oss)
+    {
+        return static_cast<unsigned>(oss) <=
+               static_cast<unsigned>(BMP180_OSS_ULTRA_HIGH_RES);
+    }
+
     /** @brief Write one register. */
     static int bmp180_write_reg(const i2c_dev* dev, uint8_t reg, uint8_t value);
 
@@ -28,10 +41,15 @@ namespace bmp
     /** @brief Read the uncompensated pressure (trigger, wait, read 0xF6-0xF8). */
     static int bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out);
 
-    /** @brief Bosch compensation algorithm, BST-BMP180-DS000-09 section 3.5. */
-    static void bmp180_compensate(const bmp180_calib_t* cal,
-                                  int32_t ut, int32_t up, uint8_t oss,
-                                  int32_t* temp_cdeg_out, int32_t* pressure_pa_out);
+    /**
+     * @brief Bosch compensation algorithm, BST-BMP180-DS000-09 section 3.5.
+     *
+     * @return 0 on success, EIO if the calibration and raw temperature combine
+     *         to a zero divisor (see the guard in the body).
+     */
+    static int bmp180_compensate(const bmp180_calib_t* cal,
+                                 int32_t ut, int32_t up, uint8_t oss,
+                                 int32_t* temp_cdeg_out, int32_t* pressure_pa_out);
 
     /** @brief ioctl handler installed on the device node. */
     static int bmp180_ioctl(i2c_dev* base, ioctl_command_t cmd, void* arg);
@@ -191,7 +209,7 @@ static int bmp::bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out)
 }
 
 
-static void bmp::bmp180_compensate(
+static int bmp::bmp180_compensate(
     const bmp180_calib_t* cal,
     const int32_t ut,
     const int32_t up,
@@ -200,7 +218,21 @@ static void bmp::bmp180_compensate(
     int32_t* pressure_pa_out)
 {
     int32_t X1 = ((ut - static_cast<int32_t>(cal->AC6)) * static_cast<int32_t>(cal->AC5)) >> 15;
-    int32_t X2 = (static_cast<int32_t>(cal->MC) << 11) / (X1 + static_cast<int32_t>(cal->MD));
+
+    // The datasheet formula divides by (X1 + MD) with no guard. The calibration
+    // sanity check rejects all-zero and all-ones coefficients but cannot rule
+    // out a runtime X1 that happens to cancel MD - reachable with corrupt
+    // calibration or a wild UT. On Cortex-M4 the outcome depends on DIV_0_TRP in
+    // SCB->CCR: either a silent zero or a UsageFault. Neither is acceptable in
+    // the measurement path, so refuse the sample instead and let the caller
+    // report it.
+    const int32_t divisor = X1 + static_cast<int32_t>(cal->MD);
+    if (divisor == 0)
+    {
+        return EIO;
+    }
+
+    int32_t X2 = (static_cast<int32_t>(cal->MC) << 11) / divisor;
 
     const int32_t B5 = X1 + X2;
     const int32_t T = (B5 + 8) >> 4;
@@ -240,6 +272,7 @@ static void bmp::bmp180_compensate(
     p = p + ((X1 + X2 + 3791) >> 4);
 
     *pressure_pa_out = p;
+    return 0;
 }
 
 
@@ -267,10 +300,10 @@ int bmp::bmp180_do_measurement(bmp180_dev_t* self,
         return rc;
     }
 
-    bmp180_compensate(&self->calib, ut, up, static_cast<uint8_t>(self->oss),
-                      &result->temperature_cdeg,
-                      &result->pressure_pa);
-    return 0;
+    return bmp180_compensate(&self->calib, ut, up,
+                             static_cast<uint8_t>(self->oss),
+                             &result->temperature_cdeg,
+                             &result->pressure_pa);
 }
 
 
@@ -302,7 +335,7 @@ static int bmp::bmp180_ioctl(i2c_dev* base, const ioctl_command_t cmd, void* arg
 
             const bmp180_oss_t new_oss = *static_cast<const bmp180_oss_t*>(arg);
 
-            if (static_cast<unsigned>(new_oss) > static_cast<unsigned>(BMP180_OSS_ULTRA_HIGH_RES))
+            if (!bmp180_oss_is_valid(new_oss))
             {
                 return -EINVAL;
             }
@@ -356,6 +389,15 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
     const char* dev_path,
     const bmp180_oss_t oss)
 {
+    // bmp180_oss_t is a plain unscoped enum, so an out-of-range value is trivial
+    // to pass by accident. bmp180_read_up indexes two 4-element tables with it
+    // and would otherwise read past both and write a garbage control byte to the
+    // sensor. Checked before allocating, so a bad argument costs nothing.
+    if (!bmp180_oss_is_valid(oss))
+    {
+        return std::make_pair(RTEMS_INVALID_NUMBER, nullptr);
+    }
+
     const auto dev = reinterpret_cast<bmp180_dev_t*>(i2c_dev_alloc_and_init(
         sizeof(bmp180_dev_t),
         bus_path,
@@ -414,9 +456,10 @@ int bmp::bmp180_selftest()
 
     int32_t temp_cdeg = 0;
     int32_t pressure_pa = 0;
-    bmp180_compensate(&cal, 27898, 23843, 0, &temp_cdeg, &pressure_pa);
+    const int rc = bmp180_compensate(&cal, 27898, 23843, 0,
+                                     &temp_cdeg, &pressure_pa);
 
-    const bool ok = (temp_cdeg == 150) && (pressure_pa == 69964);
+    const bool ok = (rc == 0) && (temp_cdeg == 150) && (pressure_pa == 69964);
     printf("[SELFTEST] compensate: T=%ld (exp 150)  P=%ld (exp 69964)  -> %s\n",
            static_cast<long>(temp_cdeg), static_cast<long>(pressure_pa),
            ok ? "PASS" : "FAIL");

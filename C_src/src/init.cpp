@@ -8,12 +8,19 @@
 #include "bmp.h"
 #include "telemetry.h"
 
-#define DRIVER_VERSION "1.2.1"
+#define DRIVER_VERSION "1.3.0"
 
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 
+/**
+ * @brief Create and start one task, returning its id through @p task_id.
+ *
+ * @details @p task_id is an out-parameter. Taking it by value would have
+ *          rtems_task_create fill a local copy the caller never sees, leaving no
+ *          way to delete, suspend or signal the task afterwards.
+ */
 template <typename TaskType>
-void setupTask(rtems_id task_id, const char title[4], const int prio,
+void setupTask(rtems_id* task_id, const char title[4], const int prio,
                const size_t stack_size, TaskType taskRrf)
 {
     rtems_status_code task = rtems_task_create(
@@ -22,7 +29,7 @@ void setupTask(rtems_id task_id, const char title[4], const int prio,
         stack_size,
         RTEMS_DEFAULT_MODES,
         RTEMS_DEFAULT_ATTRIBUTES,
-        &task_id
+        task_id
     );
 
     if (task != RTEMS_SUCCESSFUL)
@@ -34,7 +41,7 @@ void setupTask(rtems_id task_id, const char title[4], const int prio,
     }
 
     task = rtems_task_start(
-        task_id,
+        *task_id,
         taskRrf,
         0
     );
@@ -86,14 +93,14 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
         printf("%s BMP180 registered on /dev/bmp180-0\n", DEBUG_TITLE);
     }
 
-    constexpr rtems_id sensor_task_id = 0;
-    constexpr rtems_id emitter_task_id = 0;
+    rtems_id sensor_task_id = 0;
+    rtems_id emitter_task_id = 0;
 
     // Acquisition runs at higher priority (lower number) than emission, so the
     // console can never delay a measurement. The emitter gets the CPU during the
     // conversion sleeps, which is most of every acquisition cycle.
-    setupTask(sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
-    setupTask(emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
+    setupTask(&sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
+    setupTask(&emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
 
     rtems_task_suspend(RTEMS_SELF);
 }
