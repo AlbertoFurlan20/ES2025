@@ -32,16 +32,14 @@ namespace
     // hanging the whole RTEMS system.
     constexpr uint32_t I2C_POLL_BUDGET = 100000u;
 
-    struct stm32f4_i2c1_bus
+    struct stm32f4_i2c_bus
     {
         i2c_bus base;
         volatile stm32f4_i2c* regs;
     };
 
     /**
-     * @brief Poll SR1 until @p mask is set. Aborts early on an acknowledge
-     *        failure (NAK), clearing the AF flag.
-     *
+     * @brief Poll SR1 until @p mask is set. Aborts early on NAK, clearing the AF flag.
      * @return 0 if mask seen, -EIO on NAK, -ETIMEDOUT if the budget runs out.
      */
     int wait_sr1(volatile stm32f4_i2c* r, const uint32_t mask)
@@ -63,124 +61,277 @@ namespace
         return -ETIMEDOUT;
     }
 
-    void i2c1_stop(volatile stm32f4_i2c* r)
+    /**
+     * @brief Poll until the bus goes idle (bounded).
+     * @return 0 if idle, -EBUSY if still busy when the budget runs out.
+     */
+    int wait_bus_idle(volatile stm32f4_i2c* r)
+    {
+        uint32_t budget = I2C_POLL_BUDGET;
+        while ((r->sr2 & STM32F4_I2C_SR2_BUSY) && budget-- != 0) {}
+
+        return (r->sr2 & STM32F4_I2C_SR2_BUSY) ? -EBUSY : 0;
+    }
+
+    void i2c_stop(volatile stm32f4_i2c* r)
     {
         r->cr1 |= STM32F4_I2C_CR1_STOP;
         r->cr1 &= ~STM32F4_I2C_CR1_POS;
     }
 
-    int stm32f4_i2c1_transfer(i2c_bus* bus, i2c_msg* msgs, const uint32_t msg_count)
+    /**
+     * @brief Clear the ADDR flag.
+     *
+     * @details Reading SR1 then SR2 is the sequence RM0090 mandates; the reads
+     *          are `volatile` so they survive optimisation. Not dead code.
+     */
+    void clear_addr(volatile stm32f4_i2c* r)
     {
-        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
-        volatile stm32f4_i2c* r = self->regs;
+        (void)r->sr1;
+        (void)r->sr2;
+    }
 
-        // Wait for an idle bus (bounded).
-        uint32_t budget = I2C_POLL_BUDGET;
-        while ((r->sr2 & STM32F4_I2C_SR2_BUSY) && budget-- != 0) {}
-        if (r->sr2 & STM32F4_I2C_SR2_BUSY)
+    /**
+     * @brief Emit a (repeated) START and address the slave.
+     *
+     * @details No STOP is issued between messages, so every call after the first
+     *          in a transfer is a repeated START — which is what lets a register
+     *          read write the address and then turn the bus around without
+     *          releasing it.
+     *
+     * @return 0 on success, -EIO if the slave did not acknowledge its address.
+     */
+    int start_and_address(volatile stm32f4_i2c* r, const uint16_t addr, const bool is_read)
+    {
+        r->cr1 |= STM32F4_I2C_CR1_START;
+
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_SB); rc != 0)
         {
-            return -EBUSY;
+            return rc;
         }
 
-        int rc = 0;
+        r->dr = static_cast<uint32_t>((addr << 1) | (is_read ? 1 : 0));
+
+        // A NAK here means nothing answered at this address.
+        return wait_sr1(r, STM32F4_I2C_SR1_ADDR);
+    }
+
+    /** @brief Transmit @p m, ending with STOP if it is the last message. */
+    int write_msg(volatile stm32f4_i2c* r, const i2c_msg* m, const bool last)
+    {
+        clear_addr(r);
+
+        for (uint16_t k = 0; k < m->len; ++k)
+        {
+            if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_TxE); rc != 0)
+            {
+                return rc;
+            }
+            r->dr = m->buf[k];
+        }
+
+        // BTF confirms the last byte actually left the shift register.
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); rc != 0)
+        {
+            return rc;
+        }
+
+        if (last)
+        {
+            i2c_stop(r);
+        }
+
+        return 0;
+    }
+
+    /**
+     * @brief Receive exactly one byte. RM0090 §27.3.3, single-byte case.
+     *
+     * @details ACK must be down *before* ADDR is cleared, and STOP armed
+     *          immediately after, or the peripheral acknowledges a second byte
+     *          the slave then tries to send.
+     */
+    int read_msg_1(volatile stm32f4_i2c* r, const i2c_msg* m, const bool last)
+    {
+        r->cr1 &= ~STM32F4_I2C_CR1_ACK;
+        clear_addr(r);
+
+        if (last)
+        {
+            r->cr1 |= STM32F4_I2C_CR1_STOP;
+        }
+
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE); rc != 0)
+        {
+            return rc;
+        }
+
+        m->buf[0] = static_cast<uint8_t>(r->dr);
+        return 0;
+    }
+
+    /**
+     * @brief Receive exactly two bytes. RM0090 §27.3.3, POS method.
+     *
+     * @details POS makes the ACK bit apply to the *next* byte received rather
+     *          than the current one, which is what allows both bytes to be
+     *          collected after a single BTF with the NACK already placed on the
+     *          second.
+     */
+    int read_msg_2(volatile stm32f4_i2c* r, const i2c_msg* m, const bool last)
+    {
+        r->cr1 |= STM32F4_I2C_CR1_POS;
+        clear_addr(r);
+        r->cr1 &= ~STM32F4_I2C_CR1_ACK;
+
+        // BTF: both bytes are in, DR and shift register.
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); rc != 0)
+        {
+            return rc;
+        }
+
+        if (last)
+        {
+            r->cr1 |= STM32F4_I2C_CR1_STOP;
+        }
+
+        m->buf[0] = static_cast<uint8_t>(r->dr);
+        m->buf[1] = static_cast<uint8_t>(r->dr);
+        return 0;
+    }
+
+    /**
+     * @brief Receive three or more bytes. RM0090 §27.3.3, N > 2 case.
+     *
+     * @details Bytes are drained normally until three remain. From there the
+     *          sequence is timing-critical: BTF leaves DataN-2 in DR and DataN-1
+     *          in the shift register, and only with both parked can ACK be
+     *          dropped and STOP armed without the peripheral running ahead and
+     *          acknowledging a byte that should have been NACKed.
+     */
+    int read_msg_n(volatile stm32f4_i2c* r, const i2c_msg* m, const bool last)
+    {
+        clear_addr(r); // ACK is already set by the caller
+
+        uint16_t k = 0;
+
+        while (m->len - k > 3)
+        {
+            if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE); rc != 0)
+            {
+                return rc;
+            }
+            m->buf[k++] = static_cast<uint8_t>(r->dr);
+        }
+
+        // DataN-2 in DR, DataN-1 in the shift register.
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); rc != 0)
+        {
+            return rc;
+        }
+
+        r->cr1 &= ~STM32F4_I2C_CR1_ACK;
+        m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN-2
+
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); rc != 0)
+        {
+            return rc;
+        }
+
+        if (last)
+        {
+            r->cr1 |= STM32F4_I2C_CR1_STOP;
+        }
+
+        m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN-1
+
+        if (const int rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE); rc != 0)
+        {
+            return rc;
+        }
+
+        m->buf[k] = static_cast<uint8_t>(r->dr); // DataN
+        return 0;
+    }
+
+    /**
+     * @brief Arm ACK/POS for the message about to be transferred.
+     *
+     * @details ACK stays up only while more than one byte is still expected;
+     *          POS is cleared here and set again by the two-byte path alone.
+     */
+    void prime_ack(volatile stm32f4_i2c* r, const i2c_msg* m, const bool is_read)
+    {
+        if (is_read && m->len > 1)
+        {
+            r->cr1 |= STM32F4_I2C_CR1_ACK;
+        }
+        else
+        {
+            r->cr1 &= ~STM32F4_I2C_CR1_ACK;
+        }
+
+        r->cr1 &= ~STM32F4_I2C_CR1_POS;
+    }
+
+    /** @brief Transfer one message: START, address, then the matching data phase. */
+    int transfer_one(volatile stm32f4_i2c* r, const i2c_msg* m, const bool last)
+    {
+        const bool is_read = (m->flags & I2C_M_RD) != 0;
+
+        prime_ack(r, m, is_read);
+
+        if (const int rc = start_and_address(r, m->addr, is_read); rc != 0)
+        {
+            return rc;
+        }
+
+        if (!is_read)
+        {
+            return write_msg(r, m, last);
+        }
+
+        // Reception splits three ways because the peripheral holds two bytes in
+        // flight and the NACK on the final byte has to be placed differently in
+        // each case. RM0090 §27.3.3.
+        switch (m->len)
+        {
+        case 1:  return read_msg_1(r, m, last);
+        case 2:  return read_msg_2(r, m, last);
+        default: return read_msg_n(r, m, last);
+        }
+    }
+
+    int stm32f4_i2c_transfer(i2c_bus* bus, i2c_msg* msgs, const uint32_t msg_count)
+    {
+        const auto* self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
+        volatile stm32f4_i2c* r = self->regs;
+
+        if (const int rc = wait_bus_idle(r); rc != 0)
+        {
+            return rc;
+        }
 
         for (uint32_t i = 0; i < msg_count; ++i)
         {
-            const i2c_msg* m = &msgs[i];
-            const bool is_read = (m->flags & I2C_M_RD) != 0;
             const bool last = (i + 1 == msg_count);
 
-            // ACK is needed while more than one byte is still to be received.
-            if (is_read && m->len > 1)
+            if (const int rc = transfer_one(r, &msgs[i], last); rc != 0)
             {
-                r->cr1 |= STM32F4_I2C_CR1_ACK;
-            }
-            else
-            {
-                r->cr1 &= ~STM32F4_I2C_CR1_ACK;
-            }
-            r->cr1 &= ~STM32F4_I2C_CR1_POS;
-
-            // (Repeated) START.
-            r->cr1 |= STM32F4_I2C_CR1_START;
-            rc = wait_sr1(r, STM32F4_I2C_SR1_SB);
-            if (rc != 0) goto fail;
-
-            // Address + R/W bit.
-            r->dr = static_cast<uint32_t>((m->addr << 1) | (is_read ? 1 : 0));
-            rc = wait_sr1(r, STM32F4_I2C_SR1_ADDR);
-            if (rc != 0) goto fail; // NAK on address -> no device
-
-            if (!is_read)
-            {
-                (void)r->sr1; (void)r->sr2; // clear ADDR
-                for (uint16_t k = 0; k < m->len; ++k)
-                {
-                    rc = wait_sr1(r, STM32F4_I2C_SR1_TxE);
-                    if (rc != 0) goto fail;
-                    r->dr = m->buf[k];
-                }
-                rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); // ensure last byte left
-                if (rc != 0) goto fail;
-                if (last) i2c1_stop(r);
-            }
-            else if (m->len == 1)
-            {
-                r->cr1 &= ~STM32F4_I2C_CR1_ACK;
-                (void)r->sr1; (void)r->sr2;            // clear ADDR
-                if (last) r->cr1 |= STM32F4_I2C_CR1_STOP;
-                rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE);
-                if (rc != 0) goto fail;
-                m->buf[0] = static_cast<uint8_t>(r->dr);
-            }
-            else if (m->len == 2)
-            {
-                // 2-byte reception (POS method, RM0090 27.3.3).
-                r->cr1 |= STM32F4_I2C_CR1_POS;
-                (void)r->sr1; (void)r->sr2;            // clear ADDR
-                r->cr1 &= ~STM32F4_I2C_CR1_ACK;
-                rc = wait_sr1(r, STM32F4_I2C_SR1_BTF);
-                if (rc != 0) goto fail;
-                if (last) r->cr1 |= STM32F4_I2C_CR1_STOP;
-                m->buf[0] = static_cast<uint8_t>(r->dr);
-                m->buf[1] = static_cast<uint8_t>(r->dr);
-            }
-            else
-            {
-                // N > 2 reception.
-                (void)r->sr1; (void)r->sr2;            // clear ADDR (ACK already 1)
-                uint16_t k = 0;
-                while (m->len - k > 3)
-                {
-                    rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE);
-                    if (rc != 0) goto fail;
-                    m->buf[k++] = static_cast<uint8_t>(r->dr);
-                }
-                rc = wait_sr1(r, STM32F4_I2C_SR1_BTF); // DataN-2 ready, DataN-1 in shifter
-                if (rc != 0) goto fail;
-                r->cr1 &= ~STM32F4_I2C_CR1_ACK;
-                m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN-2
-                rc = wait_sr1(r, STM32F4_I2C_SR1_BTF);
-                if (rc != 0) goto fail;
-                if (last) r->cr1 |= STM32F4_I2C_CR1_STOP;
-                m->buf[k++] = static_cast<uint8_t>(r->dr); // DataN-1
-                rc = wait_sr1(r, STM32F4_I2C_SR1_RxNE);
-                if (rc != 0) goto fail;
-                m->buf[k] = static_cast<uint8_t>(r->dr); // DataN
+                // Always release the bus and clear the acknowledge failure,
+                // otherwise every subsequent transfer inherits the wedged state.
+                i2c_stop(r);
+                r->sr1 &= ~STM32F4_I2C_SR1_AF;
+                return rc;
             }
         }
 
         return 0;
-
-    fail:
-        i2c1_stop(r);
-        r->sr1 &= ~STM32F4_I2C_SR1_AF;
-        return rc;
     }
 
-    int stm32f4_i2c1_set_clock(i2c_bus* bus, const unsigned long clock)
+    int stm32f4_i2c_set_clock(i2c_bus* bus, const unsigned long clock)
     {
-        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
+        const auto* self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
         volatile stm32f4_i2c* r = self->regs;
 
         constexpr uint32_t pclk1 = STM32F4_PCLK1;
@@ -198,9 +349,9 @@ namespace
         return 0;
     }
 
-    void stm32f4_i2c1_destroy(i2c_bus* bus)
+    void stm32f4_i2c_destroy(i2c_bus* bus)
     {
-        const auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(bus);
+        const auto* self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
         self->regs->cr1 &= ~STM32F4_I2C_CR1_PE;
         i2c_bus_destroy_and_free(bus);
     }
@@ -234,15 +385,21 @@ namespace
 }
 
 
-const stm32f4_i2c_hw STM32F4_I2C1_HW{
-    0x40005400u, STM32F4_RCC_I2C1, STM32F4_GPIO_AF_I2C1,
-    STM32F4_GPIO_PIN(1, 6), STM32F4_GPIO_PIN(1, 7)};   // PB6 / PB7
+const stm32f4_i2c_hw STM32F4_I2C1_HW {
+    0x40005400u,
+    STM32F4_RCC_I2C1,
+    STM32F4_GPIO_AF_I2C1,
+    STM32F4_GPIO_PIN(1, 6),
+    STM32F4_GPIO_PIN(1, 7)
+}; // PB6 / PB7
 
 
 int stm32f4_register_i2c(const char* bus_path, const stm32f4_i2c_hw& hw)
 {
-    auto* self = reinterpret_cast<stm32f4_i2c1_bus*>(
-        i2c_bus_alloc_and_init(sizeof(stm32f4_i2c1_bus)));
+    auto* self = reinterpret_cast<stm32f4_i2c_bus*>(
+        i2c_bus_alloc_and_init(sizeof(stm32f4_i2c_bus))
+        );
+
     if (self == nullptr)
     {
         return -1;
@@ -256,11 +413,11 @@ int stm32f4_register_i2c(const char* bus_path, const stm32f4_i2c_hw& hw)
     self->regs->cr1 = STM32F4_I2C_CR1_SWRST;
     self->regs->cr1 = 0;
 
-    self->base.transfer = stm32f4_i2c1_transfer;
-    self->base.set_clock = stm32f4_i2c1_set_clock;
-    self->base.destroy = stm32f4_i2c1_destroy;
+    self->base.transfer = stm32f4_i2c_transfer;
+    self->base.set_clock = stm32f4_i2c_set_clock;
+    self->base.destroy = stm32f4_i2c_destroy;
 
-    stm32f4_i2c1_set_clock(&self->base, I2C_BUS_CLOCK_DEFAULT);
+    stm32f4_i2c_set_clock(&self->base, I2C_BUS_CLOCK_DEFAULT);
 
     // Claims ownership of the bus control regardless of success.
     return i2c_bus_register(&self->base, bus_path);
