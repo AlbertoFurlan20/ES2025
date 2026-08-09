@@ -24,18 +24,18 @@ namespace bmp
     int bmp180_load_calibration(bmp180_dev_t* self);
 
     /**
- * @brief Perform a full measurement sequence: trigger temperature and pressure measurements, read raw values, compensate and compute "true" values.
- *
- * @details This function also performs compasation on readings
- *
- * @param self device you're reading
- * @param result ptr to the measurement obj
- *
- * @todo Check documentation to see if it's possible that the sensor de-calibrates on run-time.
- *       - If not, remove first if branch to ease compiler life
- *
- * @return 0 if the both @see bmp180_read_ut and @see bmp180_read_up succeed and the compensation is done, error code otherwise.
- */
+     * @brief Perform a full measurement sequence: trigger temperature and pressure measurements, read raw values, compensate and compute "true" values.
+     *
+     * @details This function also performs compasation on readings
+     *
+     * @param self device you're reading
+     * @param result ptr to the measurement obj
+     *
+     * @todo Check documentation to see if it's possible that the sensor de-calibrates on run-time.
+     *       - If not, remove first if branch to ease compiler life
+     *
+     * @return 0 if the both @see bmp180_read_ut and @see bmp180_read_up succeed and the compensation is done, error code otherwise.
+     */
     int bmp180_do_measurement(bmp180_dev_t* self,
                               bmp180_measurement_t* result);
 
