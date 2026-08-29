@@ -21,7 +21,7 @@ PB6(SCL)/PB7(SDA)**, addr `0x77`, VCC 3.3 V.
 Nominal output once running:
 ```
 [SELFTEST] compensate: T=150 (exp 150)  P=69964 (exp 69964)  -> PASS
-#BMP180 v1 fw=1.2.0 temp_ms=0
+#BMP180 v1 fw=1.4.0 temp_ms=1000
 [[DEBUG]] BMP180 registered on /dev/bmp180-0
 S 1043221 244 96822 0
 S 1054220 244 96825 0
@@ -106,9 +106,11 @@ How to read it:
   conversion grows ~4.5 → 25.5 ms).
 - **mean_pa** should stay ~constant across modes (same true pressure).
 
-**Known result:** noise does *not* currently fall monotonically. This is B1,
-confirmed intermittent across two captures and scheduled for R2. Do not treat
-a non-monotonic sweep as a wiring fault until R2 has landed.
+**Known result:** noise fell non-monotonically until R2 (B1, the conversion
+wait expiring early). Since 1.2.1 it has been monotonic across three consecutive
+captures. A non-monotonic sweep is now a result worth investigating, not the
+expected state — but take two captures before believing it, because the original
+defect was stochastic.
 
 Tunables at the top of `bmp180_telemetry_task`: `SWEEP_SAMPLES`, `WARMUP`.
 
@@ -117,8 +119,9 @@ Tunables at the top of `bmp180_telemetry_task`: `SWEEP_SAMPLES`, `WARMUP`.
 With the read loop running, briefly disconnect **SDA**.
 
 - **Expect:** reads fail and emit `E <t_us> <errno>` records rather than
-  stopping. No system freeze, because every I2C poll is bounded by
-  `I2C_POLL_BUDGET` in `i2c.cpp`.
+  stopping. No system freeze, because every I2C poll is bounded by a 5 ms
+  deadline (`I2C_POLL_TIMEOUT_US` in `i2c.cpp`), and every conversion wait by
+  the datasheet maximum for its mode (`BMP180_CONV_TIME_*_MS`).
 - The stream continues: `bmp180_telemetry_task` logs the error and retries
   indefinitely; it does not self-delete on consecutive failures.
 - Reconnect and reset to resume.
@@ -141,6 +144,63 @@ Both should be **0** on a healthy run.
 
 Warm the chip with a finger / cool with canned air; temperature should track
 within ~1 °C of a reference thermometer at steady state.
+
+## 7. Teardown (R3, build flag)
+
+```bash
+# in C_src/
+RTEMS_LOCAL_PATH=... ./compile.sh   # after adding -DBMP180_TEARDOWN_TEST
+```
+
+Registers the device, opens it, unlinks the node and opens it again, once at
+boot, before the run's own registration.
+
+- **Expect:** `[SELFTEST] teardown: unlink(/dev/bmp180-0) -> 0  -> PASS`
+- A FAIL on the second open means the node outlived the device it points at,
+  which is the use-after-free B4 describes.
+
+## 8. R3 acceptance (SCO polling + temperature cache)
+
+Two captures, same procedure as §4, compared against the 1.3.0 baseline.
+
+| Criterion | Expectation |
+|-----------|-------------|
+| `temp_ms` in the header | `1000`, not `0` — the capture records the interval it ran with |
+| `median_interval_us` | **falls** in every mode: the fixed worst-case sleep is gone (I5) and most cycles skip the temperature conversion entirely (I19) |
+| `segment_rms_pa` | **unchanged** within noise against the 1.3.0 `rms_pa`. A conversion that is waited for properly must not be noisier than one that was slept through; if noise rises, SCO is being read too early |
+| `segment_rms_pa` monotonic in `oss` | this is the R2 gate and it must not regress |
+| Drops / errors / malformed | 0 / 0 / 0. An `E` record carrying `ETIMEDOUT` (116) means a conversion never reported finished, which is a sensor or bus fault, not a slow sample |
+| Temperature trace | stepwise, changing about once per second rather than every sample |
+
+**Read `segment_rms_pa`, not `rms_pa`, on any capture with `temp_ms` non-zero.**
+The driver compensates every reading in an interval against one cached
+temperature, and compensation moves about 25 Pa per 0.1 °C, so a drifting
+temperature leaves the stream as a staircase: flat inside an interval, stepping
+when the cache refreshes. `rms_pa` then measures thermal drift times the cache
+interval, not the sensor. `segment_rms_pa` splits the block at each refresh and
+reports the median within-segment RMS; `n_segments` shows how many refreshes the
+block spanned, so contamination is visible rather than silent.
+
+The effect is largest in the first seconds after boot, where self-heating runs
+around 0.08 °C/s: a block spanning three cached temperatures has been measured at
+16.21 Pa whole-block against 4.85 Pa within-segment. A thermally settled board
+gives one segment per sweep block and the two figures agree.
+
+Set `temp_ms` back to 0 through `BMP180_IOCTL_SET_TEMP_INTERVAL` to take a
+comparison capture with the cache disabled; the header will report the change.
+Note that `segment_rms_pa` reads NaN on such a capture by design — with the cache
+off, temperature moves almost every sample, segments are two or three samples
+long, and their spread understates the noise. Compare cache-off captures on
+`rms_pa`.
+
+**Known limitation of this ladder.** Criterion 4 held in one of the five 1.4.0
+acceptance runs. Every failure is at the OSS1→OSS2 step, and in each the OSS1
+block reads low rather than OSS2 reading high. The datasheet difference between
+those modes is 1 Pa, run-to-run scatter is about ±1 Pa, and the sweep visits each
+mode once in sequence, so slow environmental drift lands on the modes unequally.
+Interleaving the modes within a sweep — a few hundred samples of A, then B, then
+A again — would let the two be compared against the same drift, and is the change
+worth making before this criterion is trusted at that step.
 
 ---
 

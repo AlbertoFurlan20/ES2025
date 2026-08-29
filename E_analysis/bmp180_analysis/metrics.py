@@ -157,6 +157,62 @@ def blocks(session: Session):
         yield index, int(frame.oss.iloc[0]), frame
 
 
+def temperature_segments(frame: pd.DataFrame):
+    """Yield each contiguous run of samples that share one reported temperature.
+
+    Since 1.4.0 the driver caches the uncompensated temperature for
+    `temp_interval_ms` and compensates every pressure reading in the interval
+    against that one value. Compensation is sensitive to temperature at roughly
+    25 Pa per 0.1 degC, so a smooth thermal drift leaves the stream as a
+    staircase: flat inside an interval, stepping when the cache refreshes.
+
+    A whole-block standard deviation therefore measures the drift times the
+    cache interval, not the sensor. Segment the block first and the sensor is
+    visible again.
+    """
+    if frame.empty:
+        return
+
+    run_id = (frame.t_cdeg != frame.t_cdeg.shift()).cumsum()
+    for _, segment in frame.groupby(run_id, sort=True):
+        yield segment
+
+
+# Below this many samples a segment's standard deviation is a small-sample
+# artefact rather than a noise figure, and pressure resolution alone can make it
+# read near zero.
+MIN_SEGMENT_SAMPLES = 10
+
+
+def segment_rms_pa(frame: pd.DataFrame) -> float:
+    """Median within-segment pressure RMS: sensor noise with cache steps removed.
+
+    Use this, not `rms_pa`, whenever a capture ran with the temperature cache
+    enabled (`temp_ms` non-zero in the session header). The median is taken over
+    segments rather than pooling them, so one short segment at a block boundary
+    cannot dominate.
+
+    NaN when the block's segments are shorter than MIN_SEGMENT_SAMPLES, which is
+    what a capture with the cache disabled looks like: temperature moves almost
+    every sample, segments are two or three samples long, and their spread
+    understates the noise instead of isolating it. Compare such a capture on
+    `rms_pa` — with no cache there are no steps for this to remove.
+
+    @see temperature_segments for why the steps exist.
+    """
+    lengths = []
+    values = []
+    for segment in temperature_segments(frame):
+        lengths.append(len(segment))
+        if len(segment) > 1:
+            values.append(float(segment.p_pa.std(ddof=0)))
+
+    if not values or pd.Series(lengths).median() < MIN_SEGMENT_SAMPLES:
+        return math.nan
+
+    return float(pd.Series(values).median())
+
+
 def per_block_summary(session: Session) -> pd.DataFrame:
     """One row per contiguous block. Use this to compare oversampling modes.
 
@@ -176,6 +232,8 @@ def per_block_summary(session: Session) -> pd.DataFrame:
                 "span_s": span_s,
                 "mean_pa": float(frame.p_pa.mean()),
                 "rms_pa": float(frame.p_pa.std(ddof=0)),
+                "segment_rms_pa": segment_rms_pa(frame),
+                "n_segments": int(sum(1 for _ in temperature_segments(frame))),
                 "p2p_pa": int(frame.p_pa.max() - frame.p_pa.min()),
                 "datasheet_rms_pa": DATASHEET_RMS_PA.get(oss, math.nan),
                 "median_interval_us": float(intervals.median())

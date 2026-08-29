@@ -6,6 +6,135 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-07
+
+Measurements are atomic on the bus, conversions are waited on rather than
+guessed at, and temperature is no longer re-measured on every cycle.
+
+### Fixed
+
+- **I5 — the conversion wait was a fixed sleep of the datasheet maximum.** Every
+  sample paid the worst case, and a sensor that never finished converting was
+  read anyway: `0xF6` returns the previous result rather than an error, so the
+  stale sample was indistinguishable from a fresh one.
+
+  `bmp180_read_ut` and `bmp180_read_up` now sleep the datasheet *typical* time
+  (3 / 3 / 5 / 9 / 17 ms) and then poll the SCO bit in `ctrl_meas` once per tick
+  until the sensor clears it. The padded maxima from 1.2.1 become timeouts:
+  reaching one returns `ETIMEDOUT` instead of a silently stale reading.
+
+  `READ_MEASUREMENT` no longer flattens every failure to `-EIO` — a timeout and
+  a NAKed bus are different faults, and the `E` records in the stream now say
+  which one happened.
+
+- **I19 — temperature was re-measured on every cycle.** Compensation needs a
+  temperature, not a fresh one; the datasheet itself notes it can be sampled far
+  more slowly than pressure. Every measurement was paying a second conversion
+  (3-6 ms) for a quantity that moves in minutes.
+
+  The device now caches the uncompensated temperature and re-reads it when the
+  cached value is older than `temp_interval_ms`, default 1000 ms. At OSS0 a
+  measurement drops from two conversions to one; the win shrinks as the pressure
+  conversion grows, so expect roughly **+86% throughput at OSS0 and +21% at
+  OSS3**. `SET_TEMP_INTERVAL` / `GET_TEMP_INTERVAL` ioctls configure it per
+  device; 0 restores a temperature conversion per measurement.
+
+  The session header's `temp_ms` field stops being 0 and reports the configured
+  interval, which is what makes captures either side of the change comparable.
+
+  **Consequence, measured:** every reading in an interval is compensated against
+  one cached temperature, and compensation moves about 25 Pa per 0.1 °C, so a
+  drifting temperature now leaves the stream as a staircase rather than a smooth
+  curve. In the first seconds after boot, where self-heating runs ~0.08 °C/s, a
+  sweep block spanning three refreshes measured 16.21 Pa whole-block against
+  4.85 Pa within a segment. Thermally settled, the two agree. Noise comparisons
+  must therefore use `segment_rms_pa`, which the host tooling now reports; the
+  1000 ms default is kept deliberately, with the analysis adjusted to it rather
+  than the interval shortened to flatter the statistic.
+
+- **I8 — the I2C poll budget was an iteration count, not a timeout.** `100000`
+  loop iterations bound nothing checkable: the wall-clock time it stood for
+  depended on the compiler's output and the core clock, and it moved silently
+  whenever the loop body changed.
+
+  `wait_sr1` and `wait_bus_idle` now run against a 5 ms deadline taken from
+  `rtems_clock_get_uptime_nanoseconds()` — about 50x the longest legitimate wait
+  on this bus, where a byte and its ACK take ~90 us at 100 kHz. The timecounter
+  is read once every 64 spins, so the check costs far less than the poll it
+  guards. This is the prerequisite for I14 (bus recovery) being reviewable.
+
+- **I1 — a measurement was not atomic on the I2C bus.** `i2c_bus_do_transfer`
+  takes the bus mutex per *transfer*, but a BMP180 measurement is four transfers
+  with two conversion sleeps between them. Two tasks reading concurrently
+  triggered conversions into each other's sleep windows and read each other's
+  results — silently, since the sensor returns the previous conversion rather
+  than an error.
+
+  `bmp180_do_measurement` now holds the bus across the whole sequence through an
+  RAII `BusLock`. The mutex is recursive, so the per-transfer locks nest inside
+  it. `self->oss` is serialised on the same lock, as are the `SET_OSS`,
+  `GET_OSS` and `SOFT_RESET` handlers — a mode change must not land between a
+  conversion trigger and its matching read.
+
+  Measured with two concurrent readers: **unlocked, the second reader reports
+  3118.92 Pa RMS and 186463 Pa peak-to-peak, with 55.6% of its samples
+  byte-identical to the other task's. Locked, it reports 5.06 Pa against the
+  primary reader's 5.02 Pa.** Combined throughput halves, which is the correct
+  price for serialising. Single-reader behaviour is unchanged: intervals still
+  13/16/22/34 ms, noise still monotonic.
+
+- **B4 / I15 — there was no teardown path, so the destroy handlers were dead
+  code.** `bmp180_destroy` and the bus destroy handler were installed and never
+  reached, which is where the original use-after-free hid: freeing a device
+  while its `/dev` node stayed published.
+
+  `bmp180_unregister(dev_path)` goes through `unlink`, so the IMFS node runs the
+  destroy handler in the only correct order. `-DBMP180_TEARDOWN_TEST` exercises
+  register -> open -> unlink -> open at boot and prints PASS/FAIL, so the path
+  stops being code nothing runs.
+
+### Added
+
+- `-DBMP180_CONCURRENCY_TEST` builds a second reader task that opens the device
+  independently and tags its samples `oss=7`, so the two readers are separable
+  host-side without a wire-format change. `-DBMP180_NO_BUS_LOCK` reduces
+  `BusLock` to a no-op, so the failure can be reproduced from the same tree.
+  Neither belongs in a real build.
+
+
+### Verified
+
+Five 150 s captures on hardware (`20260829-193314` … `-195123`), against the
+three 1.3.0 baselines (`20260807-1832…-1837`). Noise is compared as
+`segment_rms_pa` for 1.4.0 and `rms_pa` for 1.3.0, since only the former ran a
+temperature cache.
+
+| | 1.3.0 (n=3) | 1.4.0 (n=5) | interval 1.3.0 → 1.4.0 |
+|---|---|---|---|
+| OSS0 | 5.80 Pa | 5.53 Pa | 12999 → 5000 µs (2.60x) |
+| OSS1 | 4.97 | 4.12 | 15999 → 7000 (2.29x) |
+| OSS2 | 4.45 | 4.55 | 21999 → 10999 (2.00x) |
+| OSS3 | 3.82 | 3.75 | 33998 → 18999 (1.79x) |
+| free-run OSS2 | 4.70 | 3.66 | 21999 → 10999 (2.00x) |
+
+Zero errors, drops and malformed lines across all five runs. Teardown and
+compensation selftests pass. No mode is noisier than its 1.3.0 baseline.
+
+**The R2 monotonicity criterion does not hold cleanly: `rms` falls with `oss` in
+one run of five.** The four inversions are all at OSS1→OSS2 (5.4σ, 1.4σ, 6.0σ,
+3.1σ), and in each the OSS1 block reads *low* rather than OSS2 reading high —
+1.4.0 OSS1 spans 3.54-4.82 Pa against the baseline's 4.25-5.79.
+
+Cause, as far as the data supports it: at 1.3.0 every sample carried its own
+temperature conversion, so `ut` noise was injected into every compensated
+pressure. Cached, that contribution is gone and pressure noise is the pressure
+path alone — consecutive samples also repeat more often (OSS1 duplicates rise
+from 9-12% to 12-26%). The datasheet step between OSS1 and OSS2 is 1 Pa, while
+run-to-run scatter is about ±1 Pa on an environmental floor of 0.5-2.4 Pa, and
+the sweep visits modes sequentially so drift lands on them unequally. The test
+cannot resolve the step it is asked to resolve; interleaving the modes within a
+sweep would fix that, and is a harness change rather than a driver one.
+
 ## [1.3.0] - 2026-08-07
 
 Remediation round R2 complete. Three live-path bugs fixed; with B1 from 1.2.1,
@@ -313,6 +442,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.4.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.4.0
 [1.3.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.3.0
 [1.2.1]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.1
 [1.2.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.0

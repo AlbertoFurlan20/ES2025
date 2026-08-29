@@ -8,9 +8,12 @@
 #include "bmp.h"
 #include "telemetry.h"
 
-#define DRIVER_VERSION "1.3.0"
+#define DRIVER_VERSION "1.4.0"
 
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
+#ifdef BMP180_CONCURRENCY_TEST
+rtems_task bmp180_second_reader_task(rtems_task_argument ignored);
+#endif
 
 /**
  * @brief Create and start one task, returning its id through @p task_id.
@@ -70,7 +73,16 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
 
     // Session header goes out synchronously, before any record can be emitted -
     // including the registration error below, so the stream is never headerless.
-    telem_emit_header(DRIVER_VERSION, 0);
+    // temp_ms reports the temperature re-conversion interval the device will be
+    // registered with, so captures taken either side of a change to it are
+    // comparable without consulting the firmware.
+    telem_emit_header(DRIVER_VERSION, BMP180_DEFAULT_TEMP_INTERVAL_MS);
+
+#ifdef BMP180_TEARDOWN_TEST
+    // Register, open, unlink and confirm the node is gone, before the device the
+    // rest of the run uses is registered.
+    bmp::bmp180_teardown_test("/dev/i2c-1", "/dev/bmp180-0");
+#endif
 
     // Register the BMP180 device node once on top of the I2C1 bus. This is the
     // first real I2C traffic: a chip-id read. An IO error here now means the
@@ -101,6 +113,11 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
     // conversion sleeps, which is most of every acquisition cycle.
     setupTask(&sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
     setupTask(&emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
+
+#ifdef BMP180_CONCURRENCY_TEST
+    rtems_id second_reader_id = 0;
+    setupTask(&second_reader_id, "RDR2", 3, 4 * 1024, bmp180_second_reader_task);
+#endif
 
     rtems_task_suspend(RTEMS_SELF);
 }

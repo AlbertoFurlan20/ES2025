@@ -89,3 +89,45 @@ rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
                           static_cast<uint8_t>(BMP180_OSS_HIGH_RESOLUTION));
     }
 }
+
+
+#ifdef BMP180_CONCURRENCY_TEST
+/**
+ * @brief Second reader, used only to verify I1 (atomic measurement).
+ *
+ * @details Opens the same device node independently and reads back to back.
+ *          With the bus lock in place the two tasks serialise and both see
+ *          coherent pressure; without it they trigger conversions into each
+ *          other's sleep windows and read each other's results, which shows up
+ *          as gross outliers in the stream.
+ *
+ *          Marks its samples with oss=7 - outside the valid 0-3 range - so the
+ *          host tooling can separate the two readers without a format change.
+ */
+rtems_task bmp180_second_reader_task(const rtems_task_argument ignored)
+{
+    (void)ignored;
+
+    const int fd = open("/dev/bmp180-0", O_RDWR);
+    if (fd < 0)
+    {
+        telem_push_error(telem_now_us(), errno);
+        rtems_task_delete(RTEMS_SELF);
+
+        return;
+    }
+
+    while (true)
+    {
+        bmp180_measurement_t m;
+
+        if (ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m) != 0)
+        {
+            telem_push_error(telem_now_us(), errno);
+            continue;
+        }
+
+        telem_push_sample(telem_now_us(), m.temperature_cdeg, m.pressure_pa, 7);
+    }
+}
+#endif

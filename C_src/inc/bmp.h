@@ -56,6 +56,35 @@ namespace bmp
     );
 
     /**
+     * @brief Removes a registered device node and frees the device behind it.
+     *
+     * @details Goes through `unlink`, which is the only correct order: the IMFS
+     *          node owns the device, so unlinking runs the node's destroy
+     *          handler. Freeing the device directly would leave a published node
+     *          pointing at freed memory, which is the use-after-free this
+     *          function exists to make unreachable.
+     *
+     * @param dev_path node to remove, e.g. "/dev/bmp180-0"
+     *
+     * @return 0 on success, -errno otherwise.
+     */
+    int bmp180_unregister(const char* dev_path);
+
+#ifdef BMP180_TEARDOWN_TEST
+    /**
+     * @brief Exercises register -> open -> unregister -> open once at boot.
+     *
+     * @details Without a caller the teardown path and the destroy handlers are
+     *          dead code, and dead code is where the original use-after-free
+     *          lived. Built only under -DBMP180_TEARDOWN_TEST; never in a real
+     *          build.
+     *
+     * @return 0 on PASS, -1 on FAIL.
+     */
+    int bmp180_teardown_test(const char* bus_path, const char* dev_path);
+#endif
+
+    /**
      * @brief Validates bmp180_compensate against the datasheet worked example
      *        (BST-BMP180-DS000-09 section 3.5). Hardware-independent.
      *

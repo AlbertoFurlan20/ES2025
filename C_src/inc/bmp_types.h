@@ -51,11 +51,30 @@ typedef struct {
 } bmp180_measurement_t;
 
 
+/**
+ * @brief Default temperature re-conversion interval, in milliseconds.
+ *
+ * @details A pressure reading needs a temperature to compensate against, but the
+ *          datasheet notes temperature can be measured far less often than
+ *          pressure. Re-reading it every cycle spent a whole extra conversion
+ *          (3-6 ms) per sample on a quantity that moves in minutes.
+ *
+ *          0 disables the cache and restores a temperature conversion per
+ *          measurement. Settable per device through BMP180_IOCTL_SET_TEMP_INTERVAL.
+ */
+#define BMP180_DEFAULT_TEMP_INTERVAL_MS 1000u
+
 typedef struct {
     i2c_dev         base;
     bmp180_calib_t  calib;
     bmp180_oss_t    oss;
     bool            calib_loaded;
+
+    /* Temperature cache. @see BMP180_DEFAULT_TEMP_INTERVAL_MS */
+    uint32_t        temp_interval_ms;  ///< 0 = re-read every measurement.
+    int32_t         cached_ut;         ///< Last uncompensated temperature.
+    uint64_t        cached_ut_ns;      ///< Uptime when it was read.
+    bool            ut_valid;          ///< False until the first read.
 } bmp180_dev_t;
 
 #endif //ES2025_BMP_CONFIGS_H

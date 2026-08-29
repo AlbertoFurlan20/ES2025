@@ -198,3 +198,72 @@ def test_per_oss_summary_still_pools_by_design():
     summary = metrics.per_oss_summary(build(rows))
     assert list(summary.oss) == [2, 3]
     assert int(summary[summary.oss == 2].n.iloc[0]) == 6
+
+
+def test_temperature_segments_split_on_cache_refresh():
+    """A block is one segment per cached temperature, not one segment overall."""
+    session = build(
+        [
+            "S 1000 244 96820 0",
+            "S 6000 244 96822 0",
+            "S 11000 245 96860 0",
+            "S 16000 245 96862 0",
+        ]
+    )
+    frame = session.samples
+    segments = list(metrics.temperature_segments(frame))
+    assert [len(s) for s in segments] == [2, 2]
+    assert [int(s.t_cdeg.iloc[0]) for s in segments] == [244, 245]
+
+
+def test_segment_rms_excludes_the_cache_step():
+    """The step between cached temperatures is not sensor noise.
+
+    Two segments 40 Pa apart, each holding a 1 Pa spread: the block RMS sees the
+    step and reports ~20 Pa, the segment RMS reports the 1 Pa that is real.
+    """
+    rows = [
+        f"S {1000 + i * 5000} 244 {96820 + (i % 2) * 2} 0" for i in range(20)
+    ] + [
+        f"S {101000 + i * 5000} 245 {96860 + (i % 2) * 2} 0" for i in range(20)
+    ]
+    frame = build(rows).samples
+
+    assert frame.p_pa.std(ddof=0) == pytest.approx(20.0, abs=0.5)
+    assert metrics.segment_rms_pa(frame) == pytest.approx(1.0, abs=0.01)
+
+
+def test_segment_rms_is_block_rms_when_temperature_is_constant():
+    """With no cache refresh in the block the two measures must agree."""
+    rows = [f"S {1000 + i * 5000} 244 {96820 + (i % 2) * 2} 0" for i in range(20)]
+    frame = build(rows).samples
+    assert metrics.segment_rms_pa(frame) == pytest.approx(
+        float(frame.p_pa.std(ddof=0)), abs=1e-9
+    )
+
+
+def test_per_block_summary_reports_segments():
+    """The summary carries the segment count so cache contamination is visible."""
+    rows = [
+        f"S {1000 + i * 5000} 244 {96820 + (i % 2) * 2} 0" for i in range(20)
+    ] + [
+        f"S {101000 + i * 5000} 245 {96860 + (i % 2) * 2} 0" for i in range(20)
+    ]
+    row = metrics.per_block_summary(build(rows)).iloc[0]
+    assert row.n_segments == 2
+    assert row.segment_rms_pa < row.rms_pa
+
+
+def test_segment_rms_is_nan_without_a_temperature_cache():
+    """Short segments mean the cache was off; the measure does not apply.
+
+    With temp_ms=0 the temperature moves almost every sample, so segments are a
+    couple of samples long and their spread understates the noise. Returning NaN
+    stops such a capture being compared against a cached one on this column.
+    """
+    rows = [
+        f"S {1000 + i * 5000} {244 + i} {96820 + (i % 2) * 8} 0" for i in range(40)
+    ]
+    frame = build(rows).samples
+    assert math.isnan(metrics.segment_rms_pa(frame))
+    assert frame.p_pa.std(ddof=0) > 0

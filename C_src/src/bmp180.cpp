@@ -2,8 +2,14 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <unistd.h>
+
+#ifdef BMP180_TEARDOWN_TEST
+#include <fcntl.h>
+#endif
 
 #include "bmp.h"
 #include "bmp180_ioctls.h"
@@ -15,6 +21,54 @@
 // was reporting, once per includer.
 namespace bmp
 {
+    /**
+     * @brief Holds the I2C bus lock for the enclosing scope.
+     *
+     * @details A BMP180 measurement is four bus transfers with conversion sleeps
+     *          between them. `i2c_bus_do_transfer` locks per *transfer*, so
+     *          without an outer lock two tasks would trigger conversions into
+     *          each other's sleep windows and read each other's results —
+     *          silently, since the sensor returns the previous conversion rather
+     *          than an error.
+     *
+     *          The bus mutex is an `rtems_recursive_mutex`, so the per-transfer
+     *          locks nest inside this one safely.
+     *
+     *          Also serialises `self->oss`, which selects both the control byte
+     *          and the compensation shift and is otherwise read and written with
+     *          no synchronisation.
+     *
+     *          RAII because every user has several early returns; a manual
+     *          release would have to be repeated on each and would eventually be
+     *          missed, deadlocking the bus.
+     */
+    class BusLock
+    {
+    public:
+        // -DBMP180_NO_BUS_LOCK makes this a no-op. Exists so the two-reader
+        // concurrency test can be run against both behaviours from one tree;
+        // never define it in a real build.
+        explicit BusLock(i2c_bus* bus) noexcept : bus_(bus)
+        {
+#ifndef BMP180_NO_BUS_LOCK
+            i2c_bus_obtain(bus_);
+#endif
+        }
+
+        ~BusLock()
+        {
+#ifndef BMP180_NO_BUS_LOCK
+            i2c_bus_release(bus_);
+#endif
+        }
+
+        BusLock(const BusLock&) = delete;
+        BusLock& operator=(const BusLock&) = delete;
+
+    private:
+        i2c_bus* bus_;
+    };
+
     /**
      * @brief True if @p oss names one of the four oversampling modes.
      *
@@ -35,11 +89,43 @@ namespace bmp
     static int bmp180_read_regs(const i2c_dev* dev, uint8_t reg,
                                 uint8_t* dst, uint16_t len);
 
+    /**
+     * @brief Wait for a triggered conversion to finish.
+     *
+     * @details Sleeps the datasheet typical time, then polls the SCO bit in
+     *          `ctrl_meas` once per tick until the sensor clears it. Replaces a
+     *          fixed sleep of the datasheet *maximum*: that made every sample pay
+     *          the worst case, and it also meant a sensor that never finished was
+     *          read anyway, returning the previous conversion with no error.
+     *
+     * @param typical_ms  datasheet typical conversion time for this mode.
+     * @param timeout_ms  datasheet maximum plus a tick; giving up here means the
+     *                    sensor is not converting, not that it is slow.
+     *
+     * @return 0 once SCO is clear, ETIMEDOUT if it never cleared, or the bus
+     *         error from the poll read.
+     */
+    static int bmp180_wait_conversion(const bmp180_dev_t* self,
+                                      uint32_t typical_ms, uint32_t timeout_ms);
+
     /** @brief Read the uncompensated temperature (trigger, wait, read 0xF6-0xF7). */
     static int bmp180_read_ut(const bmp180_dev_t* self, int32_t* ut_out);
 
     /** @brief Read the uncompensated pressure (trigger, wait, read 0xF6-0xF8). */
     static int bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out);
+
+    /**
+     * @brief Uncompensated temperature for this measurement, from the cache when
+     *        it is still inside the configured re-conversion interval.
+     *
+     * @details Compensation needs a temperature, not a fresh one: the datasheet
+     *          itself notes temperature may be sampled far more slowly than
+     *          pressure. Reading it every cycle spent a second conversion on a
+     *          quantity that moves in minutes.
+     *
+     * @see BMP180_DEFAULT_TEMP_INTERVAL_MS, BMP180_IOCTL_SET_TEMP_INTERVAL
+     */
+    static int bmp180_acquire_ut(bmp180_dev_t* self, int32_t* ut_out);
 
     /**
      * @brief Bosch compensation algorithm, BST-BMP180-DS000-09 section 3.5.
@@ -140,6 +226,42 @@ int bmp::bmp180_load_calibration(bmp180_dev_t* self)
 }
 
 
+static int bmp::bmp180_wait_conversion(const bmp180_dev_t* self,
+                                       const uint32_t typical_ms,
+                                       const uint32_t timeout_ms)
+{
+    // Taken before the first sleep so the budget covers the whole wait, not just
+    // the polling that follows it.
+    const uint64_t deadline_ns = rtems_clock_get_uptime_nanoseconds() +
+        static_cast<uint64_t>(timeout_ms) * 1000000u;
+
+    rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(typical_ms));
+
+    for (;;)
+    {
+        uint8_t ctrl = 0;
+
+        if (const int rc = bmp180_read_regs(&self->base, BMP180_REG_CTRL_MEAS,
+                                            &ctrl, 1); rc != 0)
+        {
+            return rc;
+        }
+
+        if ((ctrl & BMP180_CTRL_MEAS_SCO) == 0)
+        {
+            return 0;
+        }
+
+        if (rtems_clock_get_uptime_nanoseconds() >= deadline_ns)
+        {
+            return ETIMEDOUT;
+        }
+
+        rtems_task_wake_after(1);
+    }
+}
+
+
 static int bmp::bmp180_read_ut(const bmp180_dev_t* self, int32_t* ut_out)
 {
     if (const int rc = bmp180_write_reg(&self->base,
@@ -149,9 +271,11 @@ static int bmp::bmp180_read_ut(const bmp180_dev_t* self, int32_t* ut_out)
         return rc;
     }
 
-    rtems_task_wake_after(
-        RTEMS_MILLISECONDS_TO_TICKS(BMP180_CONV_TIME_TEMP_MS)
-    );
+    if (const int rc = bmp180_wait_conversion(self, BMP180_CONV_TYP_TEMP_MS,
+                                              BMP180_CONV_TIME_TEMP_MS); rc != 0)
+    {
+        return rc;
+    }
 
     uint8_t buf[2];
 
@@ -174,7 +298,14 @@ static int bmp::bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out)
         BMP180_MEAS_CTRL_PRESS_OSS3
     };
 
-    static constexpr uint32_t wait_ms[4] = {
+    static constexpr uint32_t typical_ms[4] = {
+        BMP180_CONV_TYP_PRESS_OSS0_MS,
+        BMP180_CONV_TYP_PRESS_OSS1_MS,
+        BMP180_CONV_TYP_PRESS_OSS2_MS,
+        BMP180_CONV_TYP_PRESS_OSS3_MS
+    };
+
+    static constexpr uint32_t timeout_ms[4] = {
         BMP180_CONV_TIME_PRESS_OSS0_MS,
         BMP180_CONV_TIME_PRESS_OSS1_MS,
         BMP180_CONV_TIME_PRESS_OSS2_MS,
@@ -190,9 +321,11 @@ static int bmp::bmp180_read_up(const bmp180_dev_t* self, int32_t* up_out)
         return rc;
     }
 
-    rtems_task_wake_after(
-        RTEMS_MILLISECONDS_TO_TICKS(wait_ms[oss_idx])
-    );
+    if (const int rc = bmp180_wait_conversion(self, typical_ms[oss_idx],
+                                              timeout_ms[oss_idx]); rc != 0)
+    {
+        return rc;
+    }
 
     uint8_t buf[3];
 
@@ -276,9 +409,40 @@ static int bmp::bmp180_compensate(
 }
 
 
+static int bmp::bmp180_acquire_ut(bmp180_dev_t* self, int32_t* ut_out)
+{
+    if (self->ut_valid && self->temp_interval_ms != 0u)
+    {
+        const uint64_t age_ns =
+            rtems_clock_get_uptime_nanoseconds() - self->cached_ut_ns;
+
+        if (age_ns < static_cast<uint64_t>(self->temp_interval_ms) * 1000000u)
+        {
+            *ut_out = self->cached_ut;
+            return 0;
+        }
+    }
+
+    if (const int rc = bmp180_read_ut(self, ut_out); rc != 0)
+    {
+        return rc;
+    }
+
+    self->cached_ut = *ut_out;
+    self->cached_ut_ns = rtems_clock_get_uptime_nanoseconds();
+    self->ut_valid = true;
+
+    return 0;
+}
+
+
 int bmp::bmp180_do_measurement(bmp180_dev_t* self,
                                       bmp180_measurement_t* result)
 {
+    // Held across all four transfers and both conversion sleeps, so a
+    // concurrent reader cannot interleave its own conversions with ours.
+    const BusLock lock(self->base.bus);
+
     if (!self->calib_loaded)
     {
         if (const int rc = bmp180_load_calibration(self); rc != 0)
@@ -289,7 +453,7 @@ int bmp::bmp180_do_measurement(bmp180_dev_t* self,
 
     int32_t ut;
 
-    if (const int rc = bmp180_read_ut(self, &ut); rc != 0)
+    if (const int rc = bmp180_acquire_ut(self, &ut); rc != 0)
     {
         return rc;
     }
@@ -323,7 +487,12 @@ static int bmp::bmp180_ioctl(i2c_dev* base, const ioctl_command_t cmd, void* arg
 
             const auto result = static_cast<bmp180_measurement_t*>(arg);
 
-            return bmp180_do_measurement(self, result) != 0 ? -EIO : 0;
+            // Reported as-is rather than flattened to -EIO: a conversion that
+            // never finished (ETIMEDOUT) and a bus that NAKed are different
+            // faults, and the telemetry stream records whichever errno arrives.
+            const int rc = bmp180_do_measurement(self, result);
+
+            return rc <= 0 ? rc : -rc;
         }
 
     case BMP180_IOCTL_SET_OSS:
@@ -340,6 +509,9 @@ static int bmp::bmp180_ioctl(i2c_dev* base, const ioctl_command_t cmd, void* arg
                 return -EINVAL;
             }
 
+            // Same lock as the measurement path, so a mode change cannot land
+            // between a conversion trigger and the matching read.
+            const BusLock lock(self->base.bus);
             self->oss = new_oss;
 
             return 0;
@@ -352,13 +524,50 @@ static int bmp::bmp180_ioctl(i2c_dev* base, const ioctl_command_t cmd, void* arg
                 return -EINVAL;
             }
 
+            const BusLock lock(self->base.bus);
             *static_cast<bmp180_oss_t*>(arg) = self->oss;
+
+            return 0;
+        }
+
+    case BMP180_IOCTL_SET_TEMP_INTERVAL:
+        {
+            if (arg == nullptr)
+            {
+                return -EINVAL;
+            }
+
+            const BusLock lock(self->base.bus);
+
+            self->temp_interval_ms = *static_cast<const uint32_t*>(arg);
+
+            // The new interval judges the age of a reading taken under the old
+            // one, so a shortened interval must not be satisfied by a value
+            // already older than it.
+            self->ut_valid = false;
+
+            return 0;
+        }
+
+    case BMP180_IOCTL_GET_TEMP_INTERVAL:
+        {
+            if (arg == nullptr)
+            {
+                return -EINVAL;
+            }
+
+            const BusLock lock(self->base.bus);
+            *static_cast<uint32_t*>(arg) = self->temp_interval_ms;
 
             return 0;
         }
 
     case BMP180_IOCTL_SOFT_RESET:
         {
+            // Covers the write, the calibration invalidation and the settling
+            // wait: a measurement must not start against a resetting sensor.
+            const BusLock lock(self->base.bus);
+
             const int rc = bmp180_write_reg(base, BMP180_REG_SOFT_RESET,
                                             BMP180_SOFT_RESET_VALUE);
             if (rc != 0)
@@ -367,6 +576,7 @@ static int bmp::bmp180_ioctl(i2c_dev* base, const ioctl_command_t cmd, void* arg
             }
 
             self->calib_loaded = false;
+            self->ut_valid = false;
 
             rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(12));
             return 0;
@@ -415,6 +625,11 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
     dev->oss = oss;
     dev->calib_loaded = false;
 
+    dev->temp_interval_ms = BMP180_DEFAULT_TEMP_INTERVAL_MS;
+    dev->cached_ut = 0;
+    dev->cached_ut_ns = 0;
+    dev->ut_valid = false;
+
     memset(&dev->calib, 0, sizeof(dev->calib));
 
     uint8_t chip_id = 0;
@@ -435,6 +650,57 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
 
     return std::make_pair(RTEMS_SUCCESSFUL, dev);
 }
+
+
+int bmp::bmp180_unregister(const char* dev_path)
+{
+    // unlink runs the node's destroy handler, which is bmp180_destroy ->
+    // i2c_dev_destroy_and_free. Freeing the device first would unpublish nothing
+    // and leave the node addressable.
+    return unlink(dev_path) == 0 ? 0 : -errno;
+}
+
+
+#ifdef BMP180_TEARDOWN_TEST
+int bmp::bmp180_teardown_test(const char* bus_path, const char* dev_path)
+{
+    bool ok = true;
+
+    const auto [outcome, dev] =
+        bmp180_register(bus_path, dev_path, BMP180_OSS_ULTRA_LOW_POWER);
+    ok = ok && outcome == RTEMS_SUCCESSFUL && dev != nullptr;
+
+    if (ok)
+    {
+        const int fd = open(dev_path, O_RDWR);
+        ok = fd >= 0;
+        if (fd >= 0)
+        {
+            close(fd);
+        }
+    }
+
+    const int rc = ok ? bmp180_unregister(dev_path) : -1;
+    ok = ok && rc == 0;
+
+    // The node must be gone, not merely closed: an open that still succeeds
+    // means the device was freed while its node stayed published.
+    if (ok)
+    {
+        const int fd = open(dev_path, O_RDWR);
+        ok = fd < 0;
+        if (fd >= 0)
+        {
+            close(fd);
+        }
+    }
+
+    printf("[SELFTEST] teardown: unlink(%s) -> %d  -> %s\n",
+           dev_path, rc, ok ? "PASS" : "FAIL");
+
+    return ok ? 0 : -1;
+}
+#endif
 
 
 int bmp::bmp180_selftest()

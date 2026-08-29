@@ -29,6 +29,11 @@
 #define BMP180_MEAS_CTRL_PRESS_OSS2 0xB4u
 #define BMP180_MEAS_CTRL_PRESS_OSS3 0xF4u
 
+/* ctrl_meas bit 5 (SCO): set by a conversion trigger, cleared by the sensor when
+ * the result registers hold the new value. Polling it is what makes the waits
+ * below timeouts rather than the measurement's timing contract. */
+#define BMP180_CTRL_MEAS_SCO        0x20u
+
 /* Soft-reset magic byte */
 #define BMP180_SOFT_RESET_VALUE     0xB6u
 
@@ -38,18 +43,24 @@
 
 // Conversion times (ms).
 //
-// These deliberately exceed the datasheet maxima (4.5 / 4.5 / 7.5 / 13.5 /
-// 25.5 ms, BST-BMP180-DS000-09 Table 3) by one tick. Do not "correct" them back.
+// Two sets, both from BST-BMP180-DS000-09 Rev 2.5: typical and maximum.
 //
-// rtems_task_wake_after(n) blocks for between n-1 and n ticks: the call can land
-// anywhere inside the current tick, so the first one is partial. At a 1 ms tick
-// the old values could therefore expire up to 1 ms early, and reading 0xF6 mid
-// conversion returns the *previous* result - no error, no NAK, just a silently
-// stale sample. Each constant is now datasheet_max + 1 tick, so even the
-// worst-case n-1 wait clears the specification with ~0.5 ms of margin.
+// The driver sleeps the typical time, then polls the SCO bit until the sensor
+// reports the conversion finished, giving up at the maximum. So the typicals set
+// the common-case cycle time and the maxima are only a bound on a sensor that
+// stopped answering — reaching one is an error (ETIMEDOUT), not a slow sample.
 //
-// Costs 1 ms per measurement. R3 replaces the fixed wait with SCO-bit polling,
-// which removes the class of defect instead of padding against it.
+// The maxima carry one tick of padding over the datasheet figures (4.5 / 4.5 /
+// 7.5 / 13.5 / 25.5 ms, Table 3). rtems_task_wake_after(n) blocks for between
+// n-1 and n ticks, since the call lands somewhere inside the current tick, so an
+// unpadded timeout could expire while the sensor was still within specification.
+// Do not "correct" them back.
+#define BMP180_CONV_TYP_TEMP_MS         3u
+#define BMP180_CONV_TYP_PRESS_OSS0_MS   3u
+#define BMP180_CONV_TYP_PRESS_OSS1_MS   5u
+#define BMP180_CONV_TYP_PRESS_OSS2_MS   9u
+#define BMP180_CONV_TYP_PRESS_OSS3_MS   17u
+
 #define BMP180_CONV_TIME_TEMP_MS        6u
 #define BMP180_CONV_TIME_PRESS_OSS0_MS  6u
 #define BMP180_CONV_TIME_PRESS_OSS1_MS  9u

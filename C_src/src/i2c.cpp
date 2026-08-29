@@ -30,7 +30,25 @@ namespace
 {
     // Bounded poll budget so a missing/stuck sensor returns an error instead of
     // hanging the whole RTEMS system.
-    constexpr uint32_t I2C_POLL_BUDGET = 100000u;
+    //
+    // Expressed as time, not as an iteration count: iterations mean nothing
+    // without the compiler's output and the core clock in hand, so the old
+    // 100000 could not be checked against the bus timing it was supposed to
+    // bound, and it moved every time the loop body changed. At 100 kHz a byte
+    // and its ACK take ~90 us, and no single wait here spans more than a byte,
+    // so 5 ms leaves ~50x headroom over the longest legitimate wait.
+    constexpr uint64_t I2C_POLL_TIMEOUT_US = 5000u;
+
+    // Reading the timecounter costs far more than the register poll it guards,
+    // so the deadline is checked once every this many spins. Worst-case overrun
+    // is that many polls, which is microseconds.
+    constexpr uint32_t I2C_POLL_CHECK_SPINS = 64u;
+
+    /** @brief Uptime, in nanoseconds, at which a wait started now must give up. */
+    uint64_t poll_deadline_ns()
+    {
+        return rtems_clock_get_uptime_nanoseconds() + I2C_POLL_TIMEOUT_US * 1000u;
+    }
 
     struct stm32f4_i2c_bus
     {
@@ -44,8 +62,10 @@ namespace
      */
     int wait_sr1(volatile stm32f4_i2c* r, const uint32_t mask)
     {
-        uint32_t budget = I2C_POLL_BUDGET;
-        while (budget-- != 0)
+        const uint64_t deadline = poll_deadline_ns();
+        uint32_t spins = 0;
+
+        for (;;)
         {
             const uint32_t sr1 = r->sr1;
             if (sr1 & STM32F4_I2C_SR1_AF)
@@ -57,8 +77,16 @@ namespace
             {
                 return 0;
             }
+
+            if (++spins >= I2C_POLL_CHECK_SPINS)
+            {
+                spins = 0;
+                if (rtems_clock_get_uptime_nanoseconds() >= deadline)
+                {
+                    return -ETIMEDOUT;
+                }
+            }
         }
-        return -ETIMEDOUT;
     }
 
     /**
@@ -67,10 +95,22 @@ namespace
      */
     int wait_bus_idle(volatile stm32f4_i2c* r)
     {
-        uint32_t budget = I2C_POLL_BUDGET;
-        while ((r->sr2 & STM32F4_I2C_SR2_BUSY) && budget-- != 0) {}
+        const uint64_t deadline = poll_deadline_ns();
+        uint32_t spins = 0;
 
-        return (r->sr2 & STM32F4_I2C_SR2_BUSY) ? -EBUSY : 0;
+        while (r->sr2 & STM32F4_I2C_SR2_BUSY)
+        {
+            if (++spins >= I2C_POLL_CHECK_SPINS)
+            {
+                spins = 0;
+                if (rtems_clock_get_uptime_nanoseconds() >= deadline)
+                {
+                    return -EBUSY;
+                }
+            }
+        }
+
+        return 0;
     }
 
     void i2c_stop(volatile stm32f4_i2c* r)

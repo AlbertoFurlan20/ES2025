@@ -58,4 +58,27 @@
  */
 #define BMP180_IOCTL_SOFT_RESET         _IO('B', 0x04)
 
+/**
+ * @brief Sets how often the temperature is re-measured, in milliseconds.
+ *
+ * @details Pressure compensation needs a temperature, not a *fresh* temperature.
+ *          Between re-conversions the cached value is reused and a measurement
+ *          costs one pressure conversion instead of two conversions. 0 restores
+ *          a temperature conversion per measurement.
+ *
+ * @param 'B' is the group command of the BMP180 driver.
+ * @param 0x05 is the unique command number.
+ * @param uint32_t interval in ms.
+ */
+#define BMP180_IOCTL_SET_TEMP_INTERVAL  _IOW('B', 0x05, uint32_t)
+
+/**
+ * @brief Retrieves the configured temperature re-conversion interval.
+ *
+ * @param 'B' is the group command of the BMP180 driver.
+ * @param 0x06 is the unique command number.
+ * @param uint32_t interval in ms.
+ */
+#define BMP180_IOCTL_GET_TEMP_INTERVAL  _IOR('B', 0x06, uint32_t)
+
 #endif //ES2025_BMP180_H
