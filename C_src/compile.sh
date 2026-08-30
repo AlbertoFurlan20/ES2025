@@ -25,7 +25,7 @@ mkdir ./out
    -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
    -O0 -g \
    -std=c++17 \
-   -Wall -Wextra \
+   -Wall -Wextra -Werror \
    -fno-exceptions -fno-rtti \
    -B "$RTEMS_ROOT/7/arm-rtems7/stm32f4/lib/" \
    -qrtems \

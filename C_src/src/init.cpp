@@ -8,7 +8,7 @@
 #include "bmp.h"
 #include "telemetry.h"
 
-#define DRIVER_VERSION "1.4.0"
+#define DRIVER_VERSION "1.5.0"
 
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 #ifdef BMP180_CONCURRENCY_TEST
@@ -37,8 +37,8 @@ void setupTask(rtems_id* task_id, const char title[4], const int prio,
 
     if (task != RTEMS_SUCCESSFUL)
     {
-        printf("[DEBUG] [ERROR] Failed to create sensor task (%s)...\n", rtems_status_text(task));
-        printf("%s %s %s\n", ERROR, CREATE_FAIL, SENSOR_TASK_TITLE);
+        printf("%s %s %s (%s)\n", ES_ERROR, ES_CREATE_FAIL, ES_SENSOR_TASK_TITLE,
+               rtems_status_text(task));
 
         rtems_task_suspend(RTEMS_SELF);
     }
@@ -51,7 +51,8 @@ void setupTask(rtems_id* task_id, const char title[4], const int prio,
 
     if (task != RTEMS_SUCCESSFUL)
     {
-        printf("[DEBUG] [ERROR] Failed to start sensor task (%s)...\n", rtems_status_text(task));
+        printf("%s Failed to start %s (%s)\n", ES_ERROR, ES_SENSOR_TASK_TITLE,
+               rtems_status_text(task));
     }
 }
 
@@ -59,7 +60,7 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
 {
     (void)ignored;
 
-    printf("%s %s %s\n", DEBUG_TITLE, STARTING_TITLE, SENSOR_TASK_TITLE);
+    printf("%s %s %s\n", ES_DEBUG_TITLE, ES_STARTING_TITLE, ES_SENSOR_TASK_TITLE);
 
     // Hardware-independent check of the Bosch compensation math.
     bmp::bmp180_selftest();
@@ -67,7 +68,7 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
     // Bring up the hardware I2C1 bus the BMP180 driver depends on.
     if (stm32f4_register_i2c("/dev/i2c-1", STM32F4_I2C1_HW) != 0)
     {
-        printf("[DEBUG] [ERROR] Failed to register I2C1 bus, killing init...\n");
+        printf("%s Failed to register I2C1 bus, killing init\n", ES_ERROR);
         rtems_task_suspend(RTEMS_SELF);
     }
 
@@ -97,12 +98,12 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
         // emitter starts a few lines below.
         telem_push_error(telem_now_us(), ENODEV);
 
-        printf("[DEBUG] [ERROR] BMP180 registration failed (%s)\n",
+        printf("%s BMP180 registration failed (%s)\n", ES_ERROR,
                rtems_status_text(reg_outcome));
     }
     else
     {
-        printf("%s BMP180 registered on /dev/bmp180-0\n", DEBUG_TITLE);
+        printf("%s BMP180 registered on /dev/bmp180-0\n", ES_DEBUG_TITLE);
     }
 
     rtems_id sensor_task_id = 0;

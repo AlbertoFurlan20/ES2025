@@ -1,0 +1,7 @@
+# capture_start_utc=2026-08-30T11:16:09Z
+[[DEBUG]] Starting [[SENSOR TASK]]
+[SELFTEST] compensate: T=150 (exp 150)  P=69964 (exp 69964)  -> PASS
+#BMP180 v1 fw=1.4.0 temp_ms=1000
+[DEBUG] [ERROR] BMP180 registration failed (RTEMS_IO_ERROR)
+open /dev/bmp180-0: No such file or directory
+E 19417 19

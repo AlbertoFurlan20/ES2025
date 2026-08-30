@@ -192,6 +192,24 @@ int bmp::bmp180_load_calibration(bmp180_dev_t* self)
         return rc;
     }
 
+    // Sanity check the words as they came off the wire, before any of them is
+    // stored. The datasheet guarantees no coefficient is 0x0000 or 0xFFFF, so
+    // either value means the sensor answered with a floating or stuck bus
+    // rather than with calibration data.
+    //
+    // Checked on `raw` rather than by walking the parsed struct through a
+    // uint16_t*: that was an aliasing violation, and it silently assumed
+    // bmp180_calib_t has no padding. Nothing enforced either property.
+    for (uint16_t i = 0; i < BMP180_CALIB_DATA_LEN; i += 2)
+    {
+        const uint16_t word =
+            static_cast<uint16_t>(static_cast<uint16_t>(raw[i]) << 8 | raw[i + 1]);
+        if (word == 0x0000u || word == 0xFFFFu)
+        {
+            return EIO;
+        }
+    }
+
 #define PARSE_S16(idx) \
     ((int16_t)(((uint16_t)raw[(idx)] << 8) | (uint16_t)raw[(idx) + 1]))
 #define PARSE_U16(idx) \
@@ -211,15 +229,6 @@ int bmp::bmp180_load_calibration(bmp180_dev_t* self)
 
 #undef PARSE_S16
 #undef PARSE_U16
-
-    const auto* words = reinterpret_cast<const uint16_t*>(&self->calib);
-    for (size_t i = 0; i < sizeof(self->calib) / sizeof(uint16_t); ++i)
-    {
-        if (words[i] == 0x0000u || words[i] == 0xFFFFu)
-        {
-            return EIO;
-        }
-    }
 
     self->calib_loaded = true;
     return 0;
@@ -630,7 +639,9 @@ std::pair<rtems_status_code, bmp180_dev_t*> bmp::bmp180_register(
     dev->cached_ut_ns = 0;
     dev->ut_valid = false;
 
-    memset(&dev->calib, 0, sizeof(dev->calib));
+    // No memset of dev->calib here: i2c_dev_alloc_and_init allocates with
+    // calloc, so the block is already zero. Clearing it again implied a
+    // guarantee this code had not actually checked.
 
     uint8_t chip_id = 0;
 

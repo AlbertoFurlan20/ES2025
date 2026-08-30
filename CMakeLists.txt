@@ -39,10 +39,10 @@ set(RTEMS_FLAGS
         -mfloat-abi=hard
         -mfpu=fpv4-sp-d16
         -O0 -g
-        # Not -Werror yet: the -Wall -Wextra list is read and triaged first.
-        # It currently reports I2 (seven functions declared static in a shared
-        # header) and nothing else.
-        -Wall -Wextra
+        # -Werror since v1.5.0: the warning list has been empty since R1 fixed
+        # I2, so anything new here is a regression and should stop the build
+        # rather than scroll past.
+        -Wall -Wextra -Werror
         # No throw, try or catch anywhere in the tree since bmp180_task_manual
         # was deleted, so the unwind tables are dead weight.
         -fno-exceptions

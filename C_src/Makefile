@@ -25,7 +25,7 @@ CXXFLAGS = \
     -mfpu=fpv4-sp-d16 \
     -O0 -g \
     -std=c++17 \
-    -Wall -Wextra \
+    -Wall -Wextra -Werror \
     -fno-exceptions \
     -fno-rtti \
     -B$(BSP_LIB)/ \

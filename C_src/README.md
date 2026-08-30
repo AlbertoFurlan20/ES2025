@@ -8,24 +8,31 @@ Each sensor instance is represented by a `bmp180_dev_t` whose first member is an
 
 The public interface exposed via the /dev node is:
 ```cpp
-  ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &result)
-  ioctl(fd, BMP180_IOCTL_SET_OSS,          &oss)
-  ioctl(fd, BMP180_IOCTL_GET_OSS,          &oss)
-  ioctl(fd, BMP180_IOCTL_SOFT_RESET)
+  ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT,  &result)   // bmp180_measurement_t
+  ioctl(fd, BMP180_IOCTL_SET_OSS,           &oss)      // bmp180_oss_t
+  ioctl(fd, BMP180_IOCTL_GET_OSS,           &oss)      // bmp180_oss_t
+  ioctl(fd, BMP180_IOCTL_SOFT_RESET)                   // no payload
+  ioctl(fd, BMP180_IOCTL_SET_TEMP_INTERVAL, &ms)       // uint32_t
+  ioctl(fd, BMP180_IOCTL_GET_TEMP_INTERVAL, &ms)       // uint32_t
 ```
 
 Calibration coefficients are loaded once on the first measurement and cached in the device context.
+`bmp180_register` reads only the chip ID; a registration that succeeds therefore proves the wiring, not the calibration.
 
 The Bosch compensation algorithm is implemented verbatim from the datasheet section 3.5 (Figure 4) using `int32_t` / `int64_t` arithmetic to avoid floating-point dependencies.
+
+The bus below the driver is `src/i2c.cpp`, a polled STM32F4 master for the same framework, since the BSP ships none.
+It carries the bus recovery sequence: a slave left holding SDA by an interrupted transfer is clocked free rather than needing a power cycle.
 
 ## Sensor Conceptual flow highlighted in the docs
 ![img.png](readme_assets/img.png)
 
-## Conceptual flow that the task has to follow
-The whole thing is placed within the classic while true loop so that i can continuosly query the sensor. 
+## Conceptual flow that the task follows
+
+`bmp180_telemetry_task` (`src/sensor.cpp`) is the only reader in a normal build.
 
 Code flow:
-1. Device init: open device in RW mode (`O_RDWR` from datasheet).
+1. Device init: open the device in RW mode (`O_RDWR` from datasheet).
    - Early stop on error + `rtems_task_delete(RTEMS_SELF)` as usual.
 2. Sensor Configuration:
    - The datasheet shows 4 possible run modes that i coded into a basic struct.
@@ -37,18 +44,35 @@ Code flow:
        BMP180_OSS_ULTRA_HIGH_RES   = 3
      } bmp180_oss_t;
      ```
-   - Sensor configuration handling is done via IOCTL calls (see section below).
-3. Time Setup:
-   - It stores the number of system clock ticks per second using rtems_clock_get_ticks_per_second() to maintain a consistent execution interval in the measurement loop.
-4. Continuous Measurement Loop (Infinite Loop):
-   - Measurements Query: It passes a bmp180_measurement_t data structure down to the driver via the BMP180_IOCTL_READ_MEASUREMENT IOCTL call.
+   - Sensor configuration handling is done via IOCTL calls (see section above).
+3. Oversampling sweep: for each of the four modes, `SET_OSS`, then 3 discarded
+   warm-up samples and 500 measured ones.
+4. Continuous run at `BMP180_OSS_HIGH_RESOLUTION` for drift, jitter and
+   self-heating analysis, until the board is reset.
 5. Data Handling:
-   - On failure: It logs an error using perror() and proceeds to the next cycle.
-   - On success: It prints the measured Temperature and Pressure out to the standard output. Because the measurement expresses temperature in centi-degrees Celsius, it is formatted to normal degrees through integer division and modulo operations.
-6. . Task Suspension: Finally, it suspends execution for one second using rtems_task_wake_after(ticks_per_sec), yielding processing time to other RTEMS tasks, before the loop evaluates again.
+   - On failure: the errno is pushed as an `E` record and the loop continues.
+     A read failure is data, not a reason to stop.
+   - On success: timestamp, temperature, pressure and mode are pushed as an `S`
+     record.
 
-### IOCTL commands 
-Are: `_IO`, _`IOR`, `_IOW`.
-- _IOW('B', 0x01, bmp180_measurement_t) (BMP180_IOCTL_READ_MEASUREMENT)
-- _IOR('B', 0x03, bmp180_oss_t) (BMP180_IOCTL_GET_OSS)
-- _IO('B', 0x04) (BMP180_IOCTL_SOFT_RESET)
+There is no inter-sample sleep and no print in the acquisition path, so
+consecutive timestamps bound the true acquisition cycle time. Records are
+drained to the console by a lower-priority emitter task, so the UART can never
+delay a measurement; the wire format and the reasoning behind the split are in
+`inc/telemetry.h`. Statistics are computed host-side — see `TESTING.md` §4.
+
+## Build
+
+Toolchain path comes from `../local.cmake` only (copy `local.cmake.example`).
+`compile.sh`, `Makefile` and the root `CMakeLists.txt` all read it, and all
+build with `-Wall -Wextra -Werror -std=c++17 -fno-exceptions -fno-rtti`.
+
+```bash
+./compile.sh          # or: make
+make flash            # build + program the board over OpenOCD
+make -C tests run     # host-side unit tests, no toolchain needed
+```
+
+Four build flags exist for tests that a normal build must not carry:
+`-DBMP180_TEARDOWN_TEST`, `-DBMP180_CONCURRENCY_TEST`, `-DBMP180_NO_BUS_LOCK`
+and `-DI2C_RECOVERY_TEST`. See `TESTING.md`.

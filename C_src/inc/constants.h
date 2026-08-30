@@ -1,13 +1,20 @@
-#pragma once
+//
+// Console string constants shared by the boot path.
+//
+// Prefixed ES_ because these are unqualified all-caps names in a header: an
+// unprefixed ERROR in particular collides with vendor and system headers that
+// define the same identifier.
+//
 
-#define DEBUG_TITLE  "[[DEBUG]]"
+#ifndef ES2025_CONSTANTS_H
+#define ES2025_CONSTANTS_H
 
-#define STARTING_TITLE  "Starting"
-#define STARTING_FAIL  "Failed to start"
-#define CREATE_TITLE  "Creating"
-#define CREATE_FAIL  "Failed to create"
+#define ES_DEBUG_TITLE        "[[DEBUG]]"
+#define ES_ERROR              "[[ERROR]]"
 
-#define ERROR  "[[ERROR]]"
+#define ES_STARTING_TITLE     "Starting"
+#define ES_CREATE_FAIL        "Failed to create"
 
-#define SENSOR_TASK_TITLE  "[[SENSOR TASK]]"
-#define HEARTBEAT_TASK_TITLE "[[HEARTBEAT TASK]]"
+#define ES_SENSOR_TASK_TITLE  "[[SENSOR TASK]]"
+
+#endif //ES2025_CONSTANTS_H

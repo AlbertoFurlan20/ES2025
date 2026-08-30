@@ -9,7 +9,9 @@
 #include <sys/_stdint.h>
 
 #define BMP180_I2C_ADDR         0x77u
-#define BMP180_CHIP_ID_VALUE    0x55u
+/* The expected chip-id value lives in bmp_regs.h as BMP180_CHIP_ID_EXPECTED,
+ * with the register address it is read from. This header defines the public
+ * ioctl ABI and has no business carrying a second name for it. */
 
 
 /**

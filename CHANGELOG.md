@@ -6,6 +6,127 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-30
+
+Remediation round R4 complete, and with it the plan that started at 1.1.0. A
+bus a slave is holding can now be recovered in software; everything else here is
+cleanup with no behavioural change.
+
+### Added
+
+- **I14 — I2C bus recovery.** A CPU reset landing mid-transfer leaves the BMP180
+  part-way through returning a byte: it holds SDA low waiting for clock pulses
+  that never arrive, the peripheral latches BUSY, and every transfer afterwards
+  returns `-EBUSY` — including the chip-id read at the next boot, so the board
+  came up with no sensor and only a power cycle cleared it. Measured on the
+  wedged board as `GPIOB IDR = 0x258` (PB6 high, PB7 low) with `I2C1 SR2` BUSY
+  set. 1.4.0 made it matter: SCO polling and the temperature cache roughly
+  tripled bus occupancy per second, so `capture.sh --reset-from` began hitting
+  the window often enough to interrupt a capture session.
+
+  Recovery is the sequence the I2C specification gives — disable the peripheral,
+  take SCL and SDA over as GPIO outputs, drive up to nine SCL pulses until SDA
+  releases, issue a STOP by hand, then hand the pins back and software-reset the
+  peripheral, since BUSY is latched from the pin state. The configured bus clock
+  is re-applied afterwards rather than the default, so a `set_clock` the
+  application had done is not silently undone.
+
+  It runs from two places: registration, when SDA reads low, and `transfer()`,
+  when `wait_bus_idle` times out — this board has one master, so BUSY that
+  outlasts the poll budget means a held bus, not contention. SDA still low after
+  nine pulses returns `-EBUSY`: that is a short to ground or a dead slave, which
+  clocking does not fix, and it must not look like a recoverable wedge.
+
+- `-DI2C_RECOVERY_TEST` forces the sequence at boot so the pin handover, the
+  manual STOP and the peripheral reset can be exercised on a healthy bus, where
+  a bug would break every boot rather than only the wedged ones. Same pattern as
+  `-DBMP180_TEARDOWN_TEST`; never define it in a real build.
+
+### Fixed
+
+- **B13 — strict-aliasing violation in the calibration sanity check.** The check
+  walked `bmp180_calib_t` through a `reinterpret_cast<const uint16_t*>`, which is
+  undefined behaviour, and bounded the loop with
+  `sizeof(calib)/sizeof(uint16_t)`, which assumed the struct has no padding.
+  Both held at `-O0`; neither was enforced anywhere. The check now runs over the
+  raw 22-byte buffer as it came off the bus, with the same rejection criterion
+  (`0x0000` or `0xFFFF`, neither of which the datasheet permits for a
+  coefficient). A failed check also no longer leaves half-written calibration
+  behind, since nothing is stored until it passes.
+
+- **I16 — redundant `memset` after `calloc`.** `bmp180_register` cleared
+  `dev->calib` on a block `i2c_dev_alloc_and_init` had already zeroed, implying
+  a guarantee the caller had not checked.
+
+### Changed
+
+- **I12 — `ERROR` was an unprefixed all-caps macro in a shared header**, which
+  collides with any vendor or system header defining the same identifier. All of
+  `constants.h` is now `ES_`-prefixed, and the three macros with no caller since
+  the heartbeat task was deleted are gone.
+- **I6 — `bmp.h` included `<bits/stl_pair.h>`** for `std::pair`. That is a
+  libstdc++ internal with no stability guarantee across versions and no
+  equivalent on libc++. Now `<utility>`. `<cstring>` leaves with the last
+  `memset` in the tree.
+- **I13 — `BMP180_CHIP_ID_VALUE` deleted** from `bmp180_ioctls.h`. It duplicated
+  `BMP180_CHIP_ID_EXPECTED` in `bmp_regs.h`, which sits with the register
+  address it is read from and is the one actually used; the ioctl header defines
+  the public ABI and should not carry a second name for a register constant.
+- **I17 — header guard style is consistent.** `constants.h` used `#pragma once`
+  against `ES2025_*` guards in the other five headers.
+- **`-Werror` on all four build paths** — `compile.sh`, `C_src/Makefile`, the
+  root `CMakeLists.txt` and the host test Makefile. The warning list has been
+  empty since R1, so anything new is a regression from the change in front of
+  you and should stop the build.
+
+### Verified
+
+Hardware gate, 2026-08-30, STLINK V2J40S0 at 2.915 V.
+
+`20260830-130933`, 150 s, 13 683 samples, zero errors, drops and malformed
+lines. **`median_interval_us` is bit-identical to the five 1.4.0 acceptance runs
+in every mode** — `5000 / 7000 / 10999 / 18999` — which is the point: R4 rewrote
+the pin configuration path and added a peripheral reset, and the measurement
+path did not move by a microsecond.
+
+| oss | segment_rms_pa | 1.4.0 | median_interval_us |
+|-----|----------------|-------|--------------------|
+| 0 | 5.32 Pa | 5.53 | 5000 µs (unchanged) |
+| 1 | 5.52 | 4.12 | 7000 (unchanged) |
+| 2 | 3.83 | 4.55 | 10999 (unchanged) |
+| 3 | 3.49 | 3.75 | 18999 (unchanged) |
+| free-run OSS2 | 4.09 | 3.66 | 10999 (unchanged) |
+
+Noise is non-monotonic at OSS0→OSS1 in this run, the same known limitation the
+1.4.0 gate hit at OSS1→OSS2: the datasheet step is 1 Pa against ±1 Pa
+run-to-run scatter, and the sweep visits each mode once in sequence.
+
+**Recovery on a healthy bus** (`20260830-131247`, `-DI2C_RECOVERY_TEST`): the
+forced sequence prints `bus recovery on /dev/i2c-1 -> PASS`, registration
+succeeds, 3 723 samples at the same four intervals, 0/0/0. The peripheral comes
+back configured exactly as it was, which was the real risk in the change.
+
+**Recovery on a real wedge** (`20260830-131424`, `-131457`): normal build,
+`capture.sh 4` repeatedly so the ST-Link reset lands inside a transfer. Two of
+seven boots found SDA low, recovered, registered and streamed normally; the
+other five found it high and skipped the sequence.
+
+**A/B against 1.4.0, same board, same session** (`20260830-131609` …
+`-131611`): 1.4.0 rebuilt from `main`, flashed back, same reset hammering.
+Three consecutive boots reported `BMP180 registration failed (RTEMS_IO_ERROR)`
+with `E 19417 19` and zero samples, and stayed dead across further resets.
+Flashing 1.5.0 onto that still-wedged board recovered it on the first boot
+(`20260830-131640`), with no power cycle.
+
+### Notes
+
+- **The bug list is empty except B12**, which is unreachable until a second
+  driver shares the I2C1 bus. On the improvements side only the deferred items
+  remain: I8 is resolved, I9 and I17b are breaking ioctl changes held for a
+  2.0.0, and I15 is a teardown path that now exists and is tested.
+- Documentation drift (I10) is closed: the README described a 1 Hz printing loop
+  that has not existed since 1.1.0 and an ioctl list missing three commands.
+
 ## [1.4.0] - 2026-08-07
 
 Measurements are atomic on the bus, conversions are waited on rather than
@@ -442,6 +563,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.5.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.5.0
 [1.4.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.4.0
 [1.3.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.3.0
 [1.2.1]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.2.1

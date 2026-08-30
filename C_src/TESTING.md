@@ -21,7 +21,7 @@ PB6(SCL)/PB7(SDA)**, addr `0x77`, VCC 3.3 V.
 Nominal output once running:
 ```
 [SELFTEST] compensate: T=150 (exp 150)  P=69964 (exp 69964)  -> PASS
-#BMP180 v1 fw=1.4.0 temp_ms=1000
+#BMP180 v1 fw=1.5.0 temp_ms=1000
 [[DEBUG]] BMP180 registered on /dev/bmp180-0
 S 1043221 244 96822 0
 S 1054220 244 96825 0
@@ -126,6 +126,12 @@ With the read loop running, briefly disconnect **SDA**.
   indefinitely; it does not self-delete on consecutive failures.
 - Reconnect and reset to resume.
 
+Which errno appears says where the fault is. A disconnected SDA floats high on
+the pull-up, so the sensor never acknowledges its address and reads fail with
+`EIO` (5). SDA held *low* — shorted to ground, or a slave wedged mid-transfer —
+leaves the peripheral BUSY instead, and that path now goes through recovery
+(§9) before returning `EBUSY` (16).
+
 Registration failure is also visible in the stream: if the chip-id read at boot
 fails, `init.cpp` emits `E <t_us> 19` (`ENODEV`) before the tasks start. A
 capture keeps the stream and nothing else, so a board that came up without its
@@ -202,6 +208,72 @@ Interleaving the modes within a sweep — a few hundred samples of A, then B, th
 A again — would let the two be compared against the same drift, and is the change
 worth making before this criterion is trusted at that step.
 
+## 9. I2C bus recovery (R4, build flag + fault injection)
+
+A CPU reset landing mid-transfer leaves the BMP180 holding SDA low, waiting for
+clock pulses that never arrive. The peripheral latches BUSY, every transfer
+returns `-EBUSY`, and before v1.5.0 only a power cycle cleared it — the boot
+after such a reset came up with no sensor at all. Recovery clocks the slave free
+instead: up to nine SCL pulses driven by hand, then a manual STOP and a
+peripheral reset.
+
+**a. On a healthy bus — does recovery leave a working bus working?**
+
+This is the real risk in the change: the sequence takes the pins away from the
+peripheral and software-resets it, so a bug here breaks every boot, not only the
+wedged ones.
+
+```bash
+# in C_src/, after adding -DI2C_RECOVERY_TEST to compile.sh
+RTEMS_LOCAL_PATH=... ./compile.sh && make flash
+```
+
+The flag forces the sequence to run at registration regardless of the pin state.
+
+- **Expect:** `[[DEBUG]] bus recovery on /dev/i2c-1 -> PASS`, then a completely
+  normal run — the header line, `BMP180 registered on /dev/bmp180-0`, and `S`
+  records at the usual rate.
+- A `FAIL` here with nothing attached to the bus means the pin handover is
+  wrong, not that the bus is stuck.
+- Any change in `median_interval_us` against a capture without the flag means
+  the peripheral was not brought back with the timing it had.
+
+**b. On a wedged bus — does recovery actually free it?**
+
+Reproduce the wedge, which is what `capture.sh --reset-from` hits:
+
+```bash
+cd ../E_analysis
+./capture.sh 5     # resets over the ST-Link mid-transfer; repeat until it wedges
+```
+
+Bus occupancy since 1.4.0 is high enough that a few attempts usually land inside
+a transfer. On a pre-1.5.0 build the wedged boot shows `E <t_us> 19` (`ENODEV`)
+and no samples, and stays that way across every further reset; captures
+`20260829-192310`, `-192344`, `-192436` and `-192535` are that failure recorded.
+
+- **Expect on 1.5.0:** the next boot prints
+  `[[DEBUG]] bus recovery on /dev/i2c-1 -> PASS` and then streams samples
+  normally, with no power cycle.
+- Shorting SDA to ground while a capture runs is the deliberate version: nine
+  pulses cannot free a pin that is wired low, so recovery reports
+  `FAIL (SDA still held)` and transfers return `EBUSY` (16) until the short is
+  removed. That distinction is the point — an interrupted transfer is
+  recoverable, a shorted line is not, and the two must not look alike.
+
+The recovery attempt from inside a transfer is silent by design: it either
+succeeds, in which case the sample is simply taken, or it fails and the errno
+reaches the stream as an `E` record.
+
+**Result, 2026-08-30.** Both halves pass. Forced recovery on a healthy bus:
+`20260830-131247`, PASS line then an ordinary run at unchanged intervals. Real
+wedges: two of seven reset-boots (`20260830-131424`, `-131457`) found SDA low and
+recovered. The same reset hammering on 1.4.0 killed three consecutive boots
+(`20260830-131609` … `-131611`, `RTEMS_IO_ERROR` and `E ... 19`, zero samples)
+and the board stayed dead until 1.5.0 was flashed onto it, which cleared it on
+the first boot. Roughly two boots in seven is how often this reproduces, so
+expect to repeat `capture.sh 4` a handful of times.
+
 ---
 
 ## Quick reference
@@ -217,3 +289,4 @@ worth making before this criterion is trusted at that step.
 | Serial (macOS) | `/dev/cu.usbserial-*` (never `tty.*`) |
 | Reset | black B2 button, or ST-Link via `capture.sh` |
 | Host tests | `make -C tests run` |
+| Build flags | `BMP180_TEARDOWN_TEST` (§7), `BMP180_CONCURRENCY_TEST` / `BMP180_NO_BUS_LOCK` (I1), `I2C_RECOVERY_TEST` (§9) |

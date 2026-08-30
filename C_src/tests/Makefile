@@ -2,7 +2,7 @@
 # These do NOT use the RTEMS toolchain - they run on the development machine.
 
 CXX      ?= c++
-CXXFLAGS  = -std=c++17 -Wall -Wextra -O1 -g -I../inc
+CXXFLAGS  = -std=c++17 -Wall -Wextra -Werror -O1 -g -I../inc
 
 BINS = test_telem_ring test_telem_fmt
 

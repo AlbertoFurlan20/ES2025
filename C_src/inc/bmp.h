@@ -5,8 +5,9 @@
 #ifndef ES2025_BMP_INC_H
 #define ES2025_BMP_INC_H
 
-#include <cstring>
-#include <bits/stl_pair.h>
+#include <utility>   // std::pair: the standard header, not <bits/stl_pair.h>,
+                     // which is a libstdc++ internal with no stability guarantee
+                     // and no equivalent on libc++.
 
 #include <rtems.h>
 

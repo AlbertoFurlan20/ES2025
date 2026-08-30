@@ -7,6 +7,7 @@
 //
 
 #include <cerrno>
+#include <cstdio>
 
 #include <rtems.h>
 #include <dev/i2c/i2c.h>
@@ -16,6 +17,7 @@
 #include <bsp/io.h>        // stm32f4_gpio_* + STM32F4_GPIO_AF_I2C1
 #include <bsp/rcc.h>       // stm32f4_rcc_set_clock + STM32F4_RCC_I2C1
 
+#include "constants.h"    // ES_DEBUG_TITLE / ES_ERROR
 #include "i2c.h"          // own header, so declarations are checked here
 
 // Peripheral base addresses are written out below rather than taken from
@@ -50,11 +52,111 @@ namespace
         return rtems_clock_get_uptime_nanoseconds() + I2C_POLL_TIMEOUT_US * 1000u;
     }
 
+    // Half of one SCL period at 100 kHz. Only the recovery path below clocks the
+    // bus by hand; every normal transfer is clocked by the peripheral.
+    constexpr uint32_t I2C_RECOVERY_HALF_PERIOD_US = 5u;
+
+    // Eight data bits plus the ACK: the most clock pulses a slave can still be
+    // waiting for when a transfer is interrupted, so the most it can need to
+    // finish shifting out and let go of SDA. I2C specification, section 3.1.16.
+    constexpr int I2C_RECOVERY_MAX_PULSES = 9;
+
     struct stm32f4_i2c_bus
     {
         i2c_bus base;
         volatile stm32f4_i2c* regs;
+
+        // Kept per bus because recovery has to re-mux the pins and re-apply the
+        // timing itself: it takes the peripheral apart down to a software reset,
+        // and nothing else on the way back up knows which peripheral this is.
+        stm32f4_i2c_hw hw;
+        unsigned long clock;
     };
+
+    void i2c_pins_config(const stm32f4_i2c_hw& hw, stm32f4_gpio_mode mode,
+                         bool driven_high);
+    int stm32f4_i2c_set_clock(i2c_bus* bus, unsigned long clock);
+
+    /** @brief Busy-wait @p us microseconds against the uptime counter. */
+    void delay_us(const uint32_t us)
+    {
+        const uint64_t deadline =
+            rtems_clock_get_uptime_nanoseconds() + static_cast<uint64_t>(us) * 1000u;
+
+        while (rtems_clock_get_uptime_nanoseconds() < deadline)
+        {
+        }
+    }
+
+    /**
+     * @brief Free a bus that a slave is holding low, by clocking it out by hand.
+     *
+     * @details A CPU reset landing mid-transfer leaves the slave part-way
+     *          through returning a byte. It goes on holding SDA low waiting for
+     *          the clock pulses that never arrive, the peripheral reports BUSY
+     *          forever, and every transfer after that returns -EBUSY — including
+     *          the chip-id read at the next boot. Nothing in the I2C peripheral
+     *          clears that state; before this existed only a power cycle did.
+     *
+     *          The remedy is the one the I2C specification gives: take the pins
+     *          away from the peripheral, drive SCL by hand until the slave has
+     *          finished shifting out whatever byte it was in the middle of and
+     *          releases SDA, then issue a STOP so it returns to idle. The
+     *          peripheral is software-reset on the way back, because BUSY is
+     *          latched from the pins and SWRST is what clears the state machine
+     *          holding it.
+     *
+     * @return 0 if SDA came back high, -EBUSY if it is still held after nine
+     *         pulses — that is a short to ground or a dead slave, not an
+     *         interrupted transfer, and no amount of clocking fixes it.
+     */
+    int i2c_bus_recover(stm32f4_i2c_bus* self)
+    {
+        const stm32f4_i2c_hw& hw = self->hw;
+        const int scl = static_cast<int>(hw.scl);
+        const int sda = static_cast<int>(hw.sda);
+
+        // The peripheral must stop driving the pins before the GPIO block does.
+        self->regs->cr1 &= ~STM32F4_I2C_CR1_PE;
+
+        // ODR is written while the pins are still muxed to the peripheral, which
+        // ignores it, so both lines are already released the instant they become
+        // GPIO outputs. The other order drives a low glitch onto the bus.
+        stm32f4_gpio_set_output(scl, true);
+        stm32f4_gpio_set_output(sda, true);
+        i2c_pins_config(hw, STM32F4_GPIO_MODE_OUTPUT, true);
+
+        bool sda_high = stm32f4_gpio_get_input(sda);
+
+        for (int pulse = 0; pulse < I2C_RECOVERY_MAX_PULSES && !sda_high; ++pulse)
+        {
+            stm32f4_gpio_set_output(scl, false);
+            delay_us(I2C_RECOVERY_HALF_PERIOD_US);
+            stm32f4_gpio_set_output(scl, true);
+            delay_us(I2C_RECOVERY_HALF_PERIOD_US);
+
+            sda_high = stm32f4_gpio_get_input(sda);
+        }
+
+        // STOP by hand: SDA pulled low while SCL is high, then released. Without
+        // it the slave stays mid-transaction and NAKs the next real transfer.
+        stm32f4_gpio_set_output(sda, false);
+        delay_us(I2C_RECOVERY_HALF_PERIOD_US);
+        stm32f4_gpio_set_output(scl, true);
+        delay_us(I2C_RECOVERY_HALF_PERIOD_US);
+        stm32f4_gpio_set_output(sda, true);
+        delay_us(I2C_RECOVERY_HALF_PERIOD_US);
+
+        // Pins back to the peripheral, then reset it and restore the timing the
+        // bus was configured with — not the default, which would silently undo
+        // any set_clock the application had done.
+        i2c_pins_config(hw, STM32F4_GPIO_MODE_AF, false);
+        self->regs->cr1 = STM32F4_I2C_CR1_SWRST;
+        self->regs->cr1 = 0;
+        stm32f4_i2c_set_clock(&self->base, self->clock);
+
+        return sda_high ? 0 : -EBUSY;
+    }
 
     /**
      * @brief Poll SR1 until @p mask is set. Aborts early on NAK, clearing the AF flag.
@@ -344,12 +446,24 @@ namespace
 
     int stm32f4_i2c_transfer(i2c_bus* bus, i2c_msg* msgs, const uint32_t msg_count)
     {
-        const auto* self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
+        const auto self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
         volatile stm32f4_i2c* r = self->regs;
 
-        if (const int rc = wait_bus_idle(r); rc != 0)
+        if (wait_bus_idle(r) != 0)
         {
-            return rc;
+            // BUSY outlasting the poll budget is not contention: this board has
+            // one master. It means a slave is holding the bus, which no further
+            // waiting will resolve — every transfer from here on would fail the
+            // same way. Clock it free and try the wait once more.
+            if (const int rc = i2c_bus_recover(self); rc != 0)
+            {
+                return rc;
+            }
+
+            if (const int rc = wait_bus_idle(r); rc != 0)
+            {
+                return rc;
+            }
         }
 
         for (uint32_t i = 0; i < msg_count; ++i)
@@ -371,8 +485,11 @@ namespace
 
     int stm32f4_i2c_set_clock(i2c_bus* bus, const unsigned long clock)
     {
-        const auto* self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
+        const auto self = reinterpret_cast<stm32f4_i2c_bus*>(bus);
         volatile stm32f4_i2c* r = self->regs;
+
+        // Remembered so recovery can restore it after the software reset.
+        self->clock = clock;
 
         constexpr uint32_t pclk1 = STM32F4_PCLK1;
         constexpr uint32_t freq_mhz = pclk1 / 1000000u;
@@ -397,28 +514,40 @@ namespace
     }
 
     /**
-     * @brief Mux the SCL/SDA pins to the peripheral and gate its clock on.
+     * @brief Configure SCL and SDA as one open-drain, pulled-up pin range.
      *
-     * @details Both pins must be AF, open-drain (I2C is wired-AND) with a
-     *          pull-up. Configured as one range, so SCL and SDA must be adjacent
-     *          pins on the same bank — true for every I2C mapping this driver
-     *          exposes.
+     * @details Open-drain because I2C is wired-AND, pulled up so an undriven bus
+     *          idles high. Configured as one range, so SCL and SDA must be
+     *          adjacent pins on the same bank — true for every I2C mapping this
+     *          driver exposes.
+     *
+     *          @p mode is AF for normal operation and OUTPUT for the recovery
+     *          path, which drives the clock by hand. @p driven_high sets the
+     *          output latch; in AF mode the peripheral owns the pins and the
+     *          latch is ignored.
      */
-    void i2c_pins_and_clock_init(const stm32f4_i2c_hw& hw)
+    void i2c_pins_config(const stm32f4_i2c_hw& hw, const stm32f4_gpio_mode mode,
+                         const bool driven_high)
     {
         stm32f4_gpio_config cfg;
         cfg.value = 0;
         cfg.fields.pin_first = hw.scl;
         cfg.fields.pin_last = hw.sda;
-        cfg.fields.mode = STM32F4_GPIO_MODE_AF;
+        cfg.fields.mode = mode;
         cfg.fields.otype = STM32F4_GPIO_OTYPE_OPEN_DRAIN;
         cfg.fields.ospeed = STM32F4_GPIO_OSPEED_50_MHZ;
         cfg.fields.pupd = STM32F4_GPIO_PULL_UP;
-        cfg.fields.output = 0;
+        cfg.fields.output = driven_high ? 1u : 0u;
         cfg.fields.af = hw.af;
 
-        stm32f4_gpio_set_clock(hw.scl, true); // enable the GPIO bank clock
         stm32f4_gpio_set_config(&cfg);
+    }
+
+    /** @brief Mux the SCL/SDA pins to the peripheral and gate its clock on. */
+    void i2c_pins_and_clock_init(const stm32f4_i2c_hw& hw)
+    {
+        stm32f4_gpio_set_clock(hw.scl, true); // enable the GPIO bank clock
+        i2c_pins_config(hw, STM32F4_GPIO_MODE_AF, false);
 
         stm32f4_rcc_set_clock(hw.rcc, true); // enable the peripheral clock
     }
@@ -446,6 +575,8 @@ int stm32f4_register_i2c(const char* bus_path, const stm32f4_i2c_hw& hw)
     }
 
     self->regs = reinterpret_cast<volatile stm32f4_i2c*>(hw.base);
+    self->hw = hw;
+    self->clock = I2C_BUS_CLOCK_DEFAULT;
 
     i2c_pins_and_clock_init(hw);
 
@@ -458,6 +589,33 @@ int stm32f4_register_i2c(const char* bus_path, const stm32f4_i2c_hw& hw)
     self->base.destroy = stm32f4_i2c_destroy;
 
     stm32f4_i2c_set_clock(&self->base, I2C_BUS_CLOCK_DEFAULT);
+
+    // A slave still holding SDA from a transfer the last CPU reset interrupted
+    // would fail every transfer from here on, starting with the chip-id read the
+    // BMP180 registration does. Checking the pin costs one register read, and
+    // boot is the one moment where recovery disturbs nothing.
+    //
+    // -DI2C_RECOVERY_TEST runs the sequence unconditionally, so the pin
+    // handover, the manual STOP and the peripheral reset can be exercised on a
+    // healthy bus rather than only on a wedged one. Never define it in a real
+    // build. @see TESTING.md section 9.
+#ifdef I2C_RECOVERY_TEST
+    const bool sda_stuck = true;
+#else
+    const bool sda_stuck = !stm32f4_gpio_get_input(static_cast<int>(hw.sda));
+#endif
+
+    if (sda_stuck)
+    {
+        const int rc = i2c_bus_recover(self);
+
+        // Console, not telemetry: this runs before the session header, so a
+        // capture would drop the record anyway - the parser ignores every line
+        // before that header.
+        printf("%s bus recovery on %s -> %s\n",
+               rc == 0 ? ES_DEBUG_TITLE : ES_ERROR, bus_path,
+               rc == 0 ? "PASS" : "FAIL (SDA still held)");
+    }
 
     // Claims ownership of the bus control regardless of success.
     return i2c_bus_register(&self->base, bus_path);
