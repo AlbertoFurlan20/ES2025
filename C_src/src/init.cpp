@@ -9,7 +9,7 @@
 #include "bmp_app.h"
 #include "telemetry.h"
 
-#define DRIVER_VERSION "1.5.0"
+#define DRIVER_VERSION "1.6.0"
 
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 #ifdef BMP180_CONCURRENCY_TEST

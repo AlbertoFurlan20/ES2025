@@ -21,7 +21,7 @@ PB6(SCL)/PB7(SDA)**, addr `0x77`, VCC 3.3 V.
 Nominal output once running:
 ```
 [SELFTEST] compensate: T=150 (exp 150)  P=69964 (exp 69964)  -> PASS
-#BMP180 v1 fw=1.5.0 temp_ms=1000
+#BMP180 v1 fw=1.6.0 temp_ms=1000
 [[DEBUG]] BMP180 registered on /dev/bmp180-0
 S 1043221 244 96822 0
 S 1054220 244 96825 0

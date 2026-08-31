@@ -6,7 +6,10 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-08-31
+
+More than one task can use the sensor now. Everything measured stays where it
+was: the driver, the bus and the acquisition timing are untouched.
 
 ### Added
 
@@ -636,6 +639,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.6.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.6.0
 [1.5.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.5.0
 [1.4.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.4.0
 [1.3.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.3.0
