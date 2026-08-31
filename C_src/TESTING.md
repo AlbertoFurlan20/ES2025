@@ -274,6 +274,43 @@ and the board stayed dead until 1.5.0 was flashed onto it, which cleared it on
 the first boot. Roughly two boots in seven is how often this reproduces, so
 expect to repeat `capture.sh 4` a handful of times.
 
+## 10. Application layer (build flag)
+
+`bmp_app` puts one sampler task above the driver: it owns `/dev/bmp180-0`,
+publishes each measurement into a snapshot, and applies control changes at the
+top of its next cycle. Consumers read the snapshot without blocking and set the
+mode without holding an fd.
+
+```bash
+# in C_src/
+RTEMS_LOCAL_PATH=... ./compile.sh   # after adding -DBMP_APP_TEST
+make flash
+```
+
+The flag replaces `bmp180_telemetry_task` with the sampler plus a demo reader.
+The demo reader runs the same profile as the sweep — 500 samples per mode, then
+a continuous run — but drives it through `bmp_app_set_oss` and reads through
+`bmp_app_read`, so a capture is directly comparable against §4 and §8.
+
+- **Expect:** `median_interval_us` of `5000 / 7000 / 10999 / 18999`, the same
+  four figures the v1.5.0 gate recorded. The layer adds no bus traffic, so any
+  change here means the demo reader is missing published samples or the sampler
+  is issuing ioctls it should not.
+- **Expect:** the `oss` field in the stream steps 0, 1, 2, 3 at 500-sample
+  boundaries. That is the control surface working from a consumer.
+- **Expect:** 0 errors, 0 drops, 0 malformed.
+
+Fault injection, as §5: pull SDA low during a run. Samples must **stop** rather
+than repeat with fresh timestamps — a failed cycle does not republish, so `t_us`
+freezes and the age of the data stays honest — and `bmp_app_last_error()`
+becomes non-zero. Reconnect and the stream resumes without a reset.
+
+The host suite `test_bmp_app_snapshot` covers the seqlock itself, including a
+concurrent writer. Note what it does *not* assert: that a read succeeds while a
+writer is hammering. A reader that exhausts `MAX_ATTEMPTS` and returns false is
+correct behaviour, so the concurrent phase checks coherence only, and the
+liveness check runs after the writer has stopped.
+
 ---
 
 ## Quick reference
@@ -289,4 +326,4 @@ expect to repeat `capture.sh 4` a handful of times.
 | Serial (macOS) | `/dev/cu.usbserial-*` (never `tty.*`) |
 | Reset | black B2 button, or ST-Link via `capture.sh` |
 | Host tests | `make -C tests run` |
-| Build flags | `BMP180_TEARDOWN_TEST` (§7), `BMP180_CONCURRENCY_TEST` / `BMP180_NO_BUS_LOCK` (I1), `I2C_RECOVERY_TEST` (§9) |
+| Build flags | `BMP180_TEARDOWN_TEST` (§7), `BMP180_CONCURRENCY_TEST` / `BMP180_NO_BUS_LOCK` (I1), `I2C_RECOVERY_TEST` (§9), `BMP_APP_TEST` (§10) |

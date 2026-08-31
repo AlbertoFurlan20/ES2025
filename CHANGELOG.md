@@ -6,6 +6,79 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **An application layer over the driver (`bmp_app`).** The driver publishes a
+  `/dev` node and nothing else, so every consumer had to open it, block for a
+  full conversion — 5 ms at OSS0, 19 ms at OSS3 — and add its own traffic to the
+  bus. Worse, changing the oversampling mode meant holding an fd, so two
+  consumers would write `oss` against each other with nothing above the driver
+  to arbitrate. That is workable for exactly one reader, which is what the tree
+  had.
+
+  One sampler task now owns `/dev/bmp180-0`. It applies any pending control
+  change, takes a measurement, and publishes it into a snapshot. Consumers read
+  that snapshot without blocking and without touching the bus, and set the mode
+  or the temperature interval through calls the sampler applies at the top of
+  its next cycle. Consumers never hold an fd, which is what gives `oss` a single
+  writer.
+
+  ```c
+  bmp_app_sample_t s;
+  if (bmp_app_read(&s)) { /* s.pressure_pa, s.t_us, s.oss, s.seq */ }
+
+  bmp_app_set_oss(BMP180_OSS_ULTRA_HIGH_RES);   /* applied next cycle */
+  ```
+
+  The snapshot is a seqlock rather than a mutex: a reader must never be able to
+  delay acquisition, and an RTEMS mutex held by a low-priority reader would
+  block the sampler until the priority-inheritance handoff completed. Its
+  counter is `uint32_t` and its payload is plain, because `std::atomic<uint64_t>`
+  is not lock-free on ARMv7-M and would put a libatomic lock inside the one
+  structure that exists to avoid one. Reads have a bounded retry budget, so a
+  reader running at higher priority than the sampler cannot spin forever waiting
+  for a writer it has preempted.
+
+  A failed cycle does not publish. The snapshot keeps its previous values *and
+  its previous timestamp*, so a consumer comparing `t_us` against the current
+  uptime sees the true age of the data rather than a fresh timestamp on a stale
+  reading — the same principle as B1.
+
+- `-DBMP_APP_TEST` builds the sampler plus a demo consumer in place of
+  `bmp180_telemetry_task`. It replaces the sweep rather than running beside it,
+  because two owners of the device node would be two writers of `oss`, which is
+  the race the layer removes.
+
+### Verified
+
+Nothing new runs in a default build, and the layer costs the shipped firmware
+nothing. `20260831-120132`, default build, 150 s: 13 695 samples,
+`median_interval_us` of `5000 / 7000 / 10999 / 18999`, zero errors, drops and
+malformed lines — the v1.5.0 gate figures unchanged. `arm-rtems7-nm` on that
+image finds no reference to the layer's tasks.
+
+`20260831-120755`, built with `-DBMP_APP_TEST`, 150 s: **13 695 samples, the
+same count**, the same four intervals, and 0/0/0. The demo consumer drove all
+four modes through `bmp_app_set_oss` and read every sample through
+`bmp_app_read`, at 500 samples per mode before the continuous run. So the whole
+profile went through the layer at no measurable cost to acquisition.
+
+The first attempt did not: 8797 samples, because the demo reader ended its sweep
+at OSS3 and stayed there, running the 129 s free-run block at 19 ms per cycle
+instead of 11 ms. It was the reader that was wrong, not the layer — it is fixed
+to settle where `bmp180_telemetry_task` settles.
+
+Host suite `test_bmp_app_snapshot` covers the seqlock against a concurrent
+writer, 30 consecutive runs clean.
+
+### Notes
+
+- `bmp180_telemetry_task` still owns the device in a default build. Moving it
+  onto the read surface, and making the sampler the only owner, is a separate
+  change.
+
 ## [1.5.0] - 2026-08-30
 
 Remediation round R4 complete, and with it the plan that started at 1.1.0. A

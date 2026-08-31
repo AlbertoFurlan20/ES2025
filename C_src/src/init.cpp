@@ -6,6 +6,7 @@
 #include "constants.h"
 #include "i2c.h"
 #include "bmp.h"
+#include "bmp_app.h"
 #include "telemetry.h"
 
 #define DRIVER_VERSION "1.5.0"
@@ -112,7 +113,18 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
     // Acquisition runs at higher priority (lower number) than emission, so the
     // console can never delay a measurement. The emitter gets the CPU during the
     // conversion sleeps, which is most of every acquisition cycle.
+#ifdef BMP_APP_TEST
+    // The application layer replaces the sweep task rather than running beside
+    // it: two owners of the device node would be two writers of `oss`, which is
+    // the race this layer exists to remove. The demo reader sits between the
+    // sampler and the emitter in priority, so it can never preempt a publish and
+    // can never delay one either.
+    rtems_id reader_task_id = 0;
+    setupTask(&sensor_task_id, "SAMP", 2, 4 * 1024, bmp_app_sampler_task);
+    setupTask(&reader_task_id, "RDAP", 4, 4 * 1024, bmp_app_demo_reader_task);
+#else
     setupTask(&sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
+#endif
     setupTask(&emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
 
 #ifdef BMP180_CONCURRENCY_TEST

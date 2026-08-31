@@ -61,6 +61,27 @@ drained to the console by a lower-priority emitter task, so the UART can never
 delay a measurement; the wire format and the reasoning behind the split are in
 `inc/telemetry.h`. Statistics are computed host-side — see `TESTING.md` §4.
 
+## Application layer
+
+`bmp_app` (`src/bmp_app.cpp`) sits above the driver so that more than one task
+can use the sensor. One sampler task owns `/dev/bmp180-0` and publishes each
+measurement into a snapshot; consumers read that snapshot without blocking and
+without adding bus traffic, and change the mode or the temperature interval
+through setters the sampler applies at the top of its next cycle.
+
+That indirection is the point: consumers never hold an fd on the device, so
+`oss` has exactly one writer and two consumers cannot fight over the mode.
+
+```cpp
+bmp_app_sample_t s;
+if (bmp_app_read(&s)) { /* s.pressure_pa, s.t_us, s.oss, s.seq */ }
+
+bmp_app_set_oss(BMP180_OSS_ULTRA_HIGH_RES);   /* applied next cycle */
+```
+
+Built only under `-DBMP_APP_TEST` for now; `bmp180_telemetry_task` still owns
+the device in a default build. See `TESTING.md` §10.
+
 ## Build
 
 Toolchain path comes from `../local.cmake` only (copy `local.cmake.example`).
@@ -73,6 +94,6 @@ make flash            # build + program the board over OpenOCD
 make -C tests run     # host-side unit tests, no toolchain needed
 ```
 
-Four build flags exist for tests that a normal build must not carry:
-`-DBMP180_TEARDOWN_TEST`, `-DBMP180_CONCURRENCY_TEST`, `-DBMP180_NO_BUS_LOCK`
-and `-DI2C_RECOVERY_TEST`. See `TESTING.md`.
+Five build flags exist for tests that a normal build must not carry:
+`-DBMP180_TEARDOWN_TEST`, `-DBMP180_CONCURRENCY_TEST`, `-DBMP180_NO_BUS_LOCK`,
+`-DI2C_RECOVERY_TEST` and `-DBMP_APP_TEST`. See `TESTING.md`.
