@@ -73,3 +73,7 @@ C_src/tests/*/test_*
 **/.venv
 __pycache__/
 .pytest_cache/
+
+# [IGNORED]
+*.ignored.*
+*.IGNORED.*
