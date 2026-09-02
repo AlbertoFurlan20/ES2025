@@ -18,18 +18,29 @@ from .parse import Session
 
 
 def plot_noise_vs_oss(session: Session, ax=None):
-    """Measured RMS pressure noise per mode against the datasheet reference."""
+    """Measured RMS pressure noise per mode against the datasheet reference.
+
+    Built from the sweep blocks of per_block_summary(), never per_oss_summary():
+    the profile visits oss=2 twice and pooling the long continuous block with the
+    short sweep block lets atmospheric drift inflate that one mode. Plots
+    segment_rms_pa where the temperature cache is on, for the same reason
+    BASELINE and TESTING give - whole-block RMS then measures thermal drift times
+    the cache interval rather than the sensor.
+    """
     if ax is None:
         _, ax = plt.subplots(figsize=(6, 4))
 
-    summary = metrics.per_oss_summary(session)
-    ax.bar(summary.oss - 0.2, summary.rms_pa, width=0.4, label="measured")
+    summary = metrics.per_block_summary(session)
+    summary = summary.drop_duplicates(subset="oss", keep="first").sort_values("oss")
+    noise = summary.segment_rms_pa.fillna(summary.rms_pa)
+
+    ax.bar(summary.oss - 0.2, noise, width=0.4, label="measured")
     ax.bar(summary.oss + 0.2, summary.datasheet_rms_pa, width=0.4,
            label="datasheet typ.")
     ax.set_xlabel("oversampling setting")
     ax.set_ylabel("RMS pressure noise [Pa]")
     ax.set_xticks(summary.oss)
-    ax.set_title("Pressure noise vs oversampling")
+    ax.set_title("Pressure noise vs oversampling (sweep blocks)")
     ax.legend()
     return ax
 

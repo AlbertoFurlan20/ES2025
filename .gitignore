@@ -53,6 +53,7 @@ rsb-log-*.txt
 
 # [JetBrains]
 **/.idea
+*.mcp.json
 
 # [Binaries]
 *.bin

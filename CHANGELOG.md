@@ -129,12 +129,30 @@ timing are untouched; what changed is who is allowed to talk to them.
   different consumer, so it is the bar to re-hit rather than a result from this
   tree.
 
-### Not yet verified on hardware
+### Verified
 
-Everything above builds `-Werror` clean and passes the host suite, but no
-capture has been taken since the merge. Re-run `E_analysis/capture.sh 150` and
-check `median_interval_us` is still `5000 / 7000 / 10999 / 18999` with 0 `D`
-records before treating the 1.5.0 gate figures as held.
+Three consecutive 150 s captures on 2026-09-02 — `20260902-165752`,
+`-170059`, `-170351`, about 13 640 samples each.
+
+- `median_interval_us` is `5000 / 7000 / 10999 / 18999` in all three, identical
+  to the 1.5.0 gate. The restructuring cost the acquisition path nothing.
+- 0 `E`, 0 `D`, 0 malformed in all three. The event-plus-`seq` mechanism keeps
+  up with the sampler at every mode, which is what the removal of the emitter
+  task and the ring was betting on.
+- `mean_pa` constant across the four sweep modes to within 4 Pa.
+- `segment_rms_pa` falls monotonically across `oss` 0→2 in all three runs. The
+  `oss=2`→`oss=3` step holds in one run of three, and `oss=0` reads above its
+  datasheet figure in two of three. Neither is new and neither is attributable
+  to this release. Fitting and removing a linear pressure trend per block shows
+  why they differ: at `oss=3` detrending changes nothing (3.22/4.32/3.57 Pa
+  become 3.92/4.14/3.99), so within-block drift is not the mechanism there and
+  the top step simply is not resolvable against 1 Pa of datasheet separation —
+  interleaving the modes within a sweep is still the change worth making. At
+  `oss=0` detrending does explain it: that block's fitted slope is −6.0 and
+  −7.7 Pa/s in the two high runs, an order of magnitude steeper than any other
+  block, and detrended it reads 6.19 and 5.90 Pa against a datasheet 6.0. It is
+  a post-boot settling transient, and an argument for more than 3 warm-up
+  samples.
 
 ## [1.6.0] - 2026-08-31
 
