@@ -1,5 +1,5 @@
 # RTEMS I2C driver for the Bosch BMP180 digital pressure sensor.
-Datasheet: BST-BMP180-DS000-09 Rev 2.5, April 2013
+Datasheet: [BST-BMP180-DS000-09 Rev 2.5](../B_docs/BST-BMP180-DS000-09.pdf), April 2013
 
 ## Layout
 
