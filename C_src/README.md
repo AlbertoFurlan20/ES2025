@@ -133,9 +133,17 @@ producer of `S` records. See `TESTING.md` §10.
 
 ## Build
 
-Toolchain path comes from `../local.cmake` only (copy `local.cmake.example`).
-`compile.sh`, `Makefile` and the root `CMakeLists.txt` all read it, and all
-build with `-Wall -Wextra -Werror -std=c++17 -fno-exceptions -fno-rtti`.
+Toolchain path comes from `../.env/setup.env` only — one plain `KEY=VALUE` line,
+copied from `.env/setup.env.example`:
+
+```
+RTEMS_LOCAL_PATH=/path/to/where/RTEMS_toolchain/lives
+```
+
+That is the single place the path is written. `RTEMS_LOCAL_PATH` in the
+environment overrides it for one command without editing the file.
+`compile.sh`, `flash.sh`, `Makefile` and the root `CMakeLists.txt` all read it,
+and all build with `-Wall -Wextra -Werror -std=c++17 -fno-exceptions -fno-rtti`.
 
 ```bash
 ./compile.sh          # or: make

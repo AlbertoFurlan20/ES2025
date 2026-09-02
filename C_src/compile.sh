@@ -1,16 +1,19 @@
 #!/bin/bash
 set -e
 
-# Toolchain location comes from one place only: ../local.cmake, which is
-# gitignored and machine-local (copy local.cmake.example to create it). The root
-# CMakeLists.txt and C_src/Makefile read the same file, so the three build paths
-# can no longer drift apart. Override with the environment if you must:
+# Toolchain location comes from one place only: ../.env/setup.env, a plain
+# KEY=VALUE file that is gitignored and machine-local (copy
+# .env/setup.env.example to create it). The root CMakeLists.txt, flash.sh and
+# C_src/Makefile read the same file, so the four build paths cannot drift apart.
+# Override for one command with the environment instead of editing it:
 #     RTEMS_LOCAL_PATH=/somewhere/else ./compile.sh
-LOCAL_CMAKE="$(dirname "$0")/../local.cmake"
-: "${RTEMS_LOCAL_PATH:=$(sed -n 's/^[[:space:]]*set(RTEMS_LOCAL_PATH[[:space:]]\{1,\}\([^)]*\)).*/\1/p' "$LOCAL_CMAKE" 2>/dev/null)}"
+ENV_FILE="$(dirname "$0")/../.env/setup.env"
+: "${RTEMS_LOCAL_PATH:=$(cat "$ENV_FILE" 2>/dev/null | tr -d '\r' \
+    | sed -n 's/^[[:space:]]*RTEMS_LOCAL_PATH[[:space:]]*=[[:space:]]*//p' \
+    | tail -1 | tr -d '"')}"
 
 if [ -z "$RTEMS_LOCAL_PATH" ]; then
-    echo "Missing RTEMS_LOCAL_PATH. Copy local.cmake.example to local.cmake and set your toolchain path." >&2
+    echo "Missing RTEMS_LOCAL_PATH. Copy .env/setup.env.example to .env/setup.env and set your toolchain path." >&2
     exit 1
 fi
 

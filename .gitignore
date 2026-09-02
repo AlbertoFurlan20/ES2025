@@ -61,7 +61,6 @@ rsb-log-*.txt
 rtems_hello
 
 # [Local machine config]
-local.cmake
 **/*.env
 
 # [Host unit-test binaries — sources keep their .cpp extension]

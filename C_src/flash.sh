@@ -5,8 +5,10 @@ set -e
 
 # Same single source of truth compile.sh uses, so objcopy comes from the
 # toolchain being built with rather than whatever is first on PATH.
-LOCAL_CMAKE="$(dirname "$0")/../local.cmake"
-: "${RTEMS_LOCAL_PATH:=$(sed -n 's/^[[:space:]]*set(RTEMS_LOCAL_PATH[[:space:]]\{1,\}\([^)]*\)).*/\1/p' "$LOCAL_CMAKE" 2>/dev/null)}"
+ENV_FILE="$(dirname "$0")/../.env/setup.env"
+: "${RTEMS_LOCAL_PATH:=$(cat "$ENV_FILE" 2>/dev/null | tr -d '\r' \
+    | sed -n 's/^[[:space:]]*RTEMS_LOCAL_PATH[[:space:]]*=[[:space:]]*//p' \
+    | tail -1 | tr -d '"')}"
 
 # From .exe to .bin
 "$RTEMS_LOCAL_PATH/RTEMS_toolchain/rtems/bin/arm-rtems7-objcopy" \
