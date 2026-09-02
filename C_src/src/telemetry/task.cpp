@@ -4,6 +4,8 @@
 // emitter.
 //
 
+#include <atomic>
+
 #include <rtems.h>
 
 #include "telemetry/task.h"
@@ -26,6 +28,15 @@ namespace
     /** @brief Mode the continuous run settles at once the sweep is done. */
     constexpr uint8_t CONTINUOUS_OSS =
         static_cast<uint8_t>(BMP180_OSS_HIGH_RESOLUTION);
+
+    // Set by the control task, read by this one. Never cleared. @see
+    // telem_cancel_sweep.
+    std::atomic<bool> g_sweep_cancelled{false};
+}
+
+void telem_cancel_sweep()
+{
+    g_sweep_cancelled.store(true, std::memory_order_relaxed);
 }
 
 rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
@@ -43,6 +54,7 @@ rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
     bmp_app_set_oss(static_cast<bmp180_oss_t>(target_oss));
 
     bool sweeping = true;
+    bool following = false; // manual control taken; record everything
     int  warmup_left = WARMUP;
     int  recorded = 0;
 
@@ -78,6 +90,16 @@ rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
             last_err = err;
         }
 
+        // An operator command landed. Stop steering the mode and start
+        // recording whatever the device is doing, or the phase test below would
+        // wait forever for a mode this task no longer controls.
+        if (following || g_sweep_cancelled.load(std::memory_order_relaxed))
+        {
+            following = true;
+            sweeping = false;
+            warmup_left = 0;
+        }
+
         bmp_app_sample_t sample{};
         if (!bmp_app_read(&sample) || sample.seq == seen_seq)
         {
@@ -87,8 +109,10 @@ rtems_task bmp180_telemetry_task(const rtems_task_argument ignored)
 
         // Deliberate discards: samples taken before the requested mode landed,
         // and the warm-up after it did. Both clear the gap baseline, so a hole
-        // this task made on purpose is never reported as one it lost.
-        if (sample.oss != target_oss || warmup_left > 0)
+        // this task made on purpose is never reported as one it lost. Skipped
+        // entirely once following: every sample is recorded, at whatever mode
+        // it carries.
+        if (!following && (sample.oss != target_oss || warmup_left > 0))
         {
             if (sample.oss == target_oss)
             {

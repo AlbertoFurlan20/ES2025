@@ -7,6 +7,7 @@
 #include "i2c/i2c.h"
 #include "bmp180/driver.h"
 #include "bmp_app/app.h"
+#include "telemetry/control.h"
 #include "telemetry/task.h"
 #include "telemetry/wire.h"
 
@@ -106,13 +107,17 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
 
     rtems_id sampler_task_id = 0;
     rtems_id telemetry_task_id = 0;
+    rtems_id control_task_id = 0;
 
-    // Two tasks, and the priority order is the whole design. The sampler owns
-    // the device and must never wait on a consumer. Telemetry sits below it, so
-    // it can only ever read a snapshot that is already stable, and it gets the
-    // CPU during the conversion wait the sampler sleeps through.
+    // Priority order is the whole design. The sampler owns the device and must
+    // never wait on a consumer. Telemetry sits below it, so it can only ever
+    // read a snapshot that is already stable, and it gets the CPU during the
+    // conversion wait the sampler sleeps through. Control is lowest: it is
+    // blocked in read() almost always, and when a command does arrive it must
+    // not preempt a publish being read one priority above it.
     setupTask(&sampler_task_id, "SAMP", 2, 4 * 1024, bmp_app_sampler_task);
     setupTask(&telemetry_task_id, "TELE", 3, 4 * 1024, bmp180_telemetry_task);
+    setupTask(&control_task_id, "CTRL", 2, 4 * 1024, bmp180_control_task);
 
 
     rtems_task_suspend(RTEMS_SELF);

@@ -35,4 +35,22 @@
  */
 rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
 
+/**
+ * @brief Abandon the boot sweep and follow whatever mode the device reports.
+ *
+ * @details Called by the control task when an operator command is accepted.
+ *          The sweep keys each block on the sample's own `oss` matching the
+ *          mode it asked for, so a mode set from anywhere else would make that
+ *          test never match again: the telemetry task would discard every
+ *          sample and the stream would stop. Taking manual control therefore
+ *          ends the profile rather than competing with it.
+ *
+ *          One-way. There is no resume, because a half-finished block is not a
+ *          block - restarting the sweep would need a fresh boot to be
+ *          comparable against the gate figures in TESTING.md section 4.
+ *
+ *          Safe from any task: one atomic store, no allocation, no blocking.
+ */
+void telem_cancel_sweep();
+
 #endif //ES2025_TELEMETRY_TASK_H
