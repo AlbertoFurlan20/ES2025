@@ -65,7 +65,7 @@ local.cmake
 **/*.env
 
 # [Host unit-test binaries — sources keep their .cpp extension]
-C_src/tests/test_*
+C_src/tests/*/test_*
 !C_src/tests/test_*.cpp
 *.dSYM/
 
