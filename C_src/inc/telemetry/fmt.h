@@ -9,11 +9,41 @@
 // bounds checking; telemetry lines have a known maximum length.
 //
 
-#ifndef ES2025_TELEM_FMT_H
-#define ES2025_TELEM_FMT_H
+#ifndef ES2025_TELEMETRY_FMT_H
+#define ES2025_TELEMETRY_FMT_H
 
 #include <cstddef>
 #include <cstdint>
+
+/**
+ * @brief Record kind. Maps to the single-character wire tag.
+ */
+enum telem_kind : uint8_t
+{
+    TELEM_SAMPLE = 0, /**< 'S' */
+    TELEM_ERROR  = 1, /**< 'E' */
+    TELEM_DROP   = 2  /**< 'D' */
+};
+
+/**
+ * @brief One telemetry record, fixed size so the ring needs no allocation.
+ *
+ * @param t_us   monotonic microseconds since boot
+ * @param t_cdeg SAMPLE: temperature in 0.1 degC; otherwise unused
+ * @param p_pa   SAMPLE: pressure in Pa; otherwise unused
+ * @param aux    ERROR: errno; DROP: number of records lost; SAMPLE: unused
+ * @param oss    SAMPLE: oversampling setting 0..3; otherwise 0
+ * @param kind   @see telem_kind
+ */
+struct telem_rec_t
+{
+    uint64_t t_us;
+    int32_t  t_cdeg;
+    int32_t  p_pa;
+    int32_t  aux;
+    uint8_t  oss;
+    uint8_t  kind;
+};
 
 /** @brief Append one character. */
 inline size_t fmt_ch(char* dst, const size_t off, const char c)
@@ -75,4 +105,4 @@ inline size_t fmt_i32(char* dst, size_t off, const int32_t v)
     return fmt_u64(dst, off, mag);
 }
 
-#endif //ES2025_TELEM_FMT_H
+#endif //ES2025_TELEMETRY_FMT_H

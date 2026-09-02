@@ -2,8 +2,8 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
-#ifndef ES2025_BMP_INC_H
-#define ES2025_BMP_INC_H
+#ifndef ES2025_BMP180_DRIVER_H
+#define ES2025_BMP180_DRIVER_H
 
 #include <utility>   // std::pair: the standard header, not <bits/stl_pair.h>,
                      // which is a libstdc++ internal with no stability guarantee
@@ -11,7 +11,7 @@
 
 #include <rtems.h>
 
-#include "bmp_types.h"
+#include "bmp180/types.h"
 
 namespace bmp
 {
@@ -97,4 +97,4 @@ namespace bmp
     int bmp180_selftest();
 };
 
-#endif //ES2025_BMP_INC_H
+#endif //ES2025_BMP180_DRIVER_H

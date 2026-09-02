@@ -4,16 +4,13 @@
 #include <cstdio>
 
 #include "constants.h"
-#include "i2c.h"
-#include "bmp.h"
-#include "telemetry.h"
+#include "i2c/i2c.h"
+#include "bmp180/driver.h"
+#include "bmp_app/app.h"
+#include "telemetry/task.h"
+#include "telemetry/wire.h"
 
-#define DRIVER_VERSION "1.5.0"
-
-rtems_task bmp180_telemetry_task(rtems_task_argument ignored);
-#ifdef BMP180_CONCURRENCY_TEST
-rtems_task bmp180_second_reader_task(rtems_task_argument ignored);
-#endif
+#define DRIVER_VERSION "2.0.0"
 
 /**
  * @brief Create and start one task, returning its id through @p task_id.
@@ -94,9 +91,10 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
     {
         // Non-fatal, but it must not be silent: a capture keeps the telemetry
         // stream and nothing else, so the failure is recorded there rather than
-        // left to console output nobody is reading. Queued now, drained once the
-        // emitter starts a few lines below.
-        telem_push_error(telem_now_us(), ENODEV);
+        // left to console output nobody is reading. Written synchronously, like
+        // the header above - there is no queue to hold it and no emitter task
+        // to drain one.
+        telem_emit_error(telem_now_us(), ENODEV);
 
         printf("%s BMP180 registration failed (%s)\n", ES_ERROR,
                rtems_status_text(reg_outcome));
@@ -106,19 +104,16 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
         printf("%s BMP180 registered on /dev/bmp180-0\n", ES_DEBUG_TITLE);
     }
 
-    rtems_id sensor_task_id = 0;
-    rtems_id emitter_task_id = 0;
+    rtems_id sampler_task_id = 0;
+    rtems_id telemetry_task_id = 0;
 
-    // Acquisition runs at higher priority (lower number) than emission, so the
-    // console can never delay a measurement. The emitter gets the CPU during the
-    // conversion sleeps, which is most of every acquisition cycle.
-    setupTask(&sensor_task_id, "TELE", 2, 4 * 1024, bmp180_telemetry_task);
-    setupTask(&emitter_task_id, "EMIT", 5, 4 * 1024, telem_emitter_task);
+    // Two tasks, and the priority order is the whole design. The sampler owns
+    // the device and must never wait on a consumer. Telemetry sits below it, so
+    // it can only ever read a snapshot that is already stable, and it gets the
+    // CPU during the conversion wait the sampler sleeps through.
+    setupTask(&sampler_task_id, "SAMP", 2, 4 * 1024, bmp_app_sampler_task);
+    setupTask(&telemetry_task_id, "TELE", 3, 4 * 1024, bmp180_telemetry_task);
 
-#ifdef BMP180_CONCURRENCY_TEST
-    rtems_id second_reader_id = 0;
-    setupTask(&second_reader_id, "RDR2", 3, 4 * 1024, bmp180_second_reader_task);
-#endif
 
     rtems_task_suspend(RTEMS_SELF);
 }

@@ -30,4 +30,4 @@ mkdir ./out
    -B "$RTEMS_ROOT/7/arm-rtems7/stm32f4/lib/" \
    -qrtems \
    -Iinc \
-   src/*.cpp -o ./out/compilation_output.exe
+   src/*.cpp src/*/*.cpp -o ./out/compilation_output.exe

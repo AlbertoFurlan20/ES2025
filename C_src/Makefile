@@ -32,8 +32,10 @@ CXXFLAGS = \
     -qrtems \
     -Iinc
 
-SRCS   = src/*.cpp
-INCLUDES = inc/*.h
+# One folder per module under src/ and inc/, so both patterns are needed:
+# init.cpp sits at the top, everything else one level down.
+SRCS     = $(wildcard src/*.cpp src/*/*.cpp)
+INCLUDES = $(wildcard inc/*.h inc/*/*.h)
 $(warning "Single compile, so do not `include` lib files, use fwd declarations instead")
 
 TARGET = sensor.exe

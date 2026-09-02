@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "telem_fmt.h"
+#include "telemetry/fmt.h"
 
 static void check_u64(const uint64_t v, const char* expect)
 {
@@ -71,6 +71,6 @@ int main()
     test_i32_boundaries();
     test_append_offsets();
     test_str_append();
-    printf("test_telem_fmt: ALL PASS\n");
+    printf("telemetry/test_fmt: ALL PASS\n");
     return 0;
 }

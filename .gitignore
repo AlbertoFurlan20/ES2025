@@ -65,8 +65,9 @@ local.cmake
 **/*.env
 
 # [Host unit-test binaries — sources keep their .cpp extension]
-C_src/tests/test_*
-!C_src/tests/test_*.cpp
+# One folder per module under C_src/tests/, mirroring src/ and inc/.
+C_src/tests/*/test_*
+!C_src/tests/*/test_*.cpp
 *.dSYM/
 
 # [Python analysis tooling]
