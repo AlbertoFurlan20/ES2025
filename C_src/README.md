@@ -13,7 +13,7 @@ inside a module carry no prefix, because the folder already says it.
 | `bmp180/` | the driver — the scope of the project |
 | `i2c/` | the polled STM32F4 master it sits on, since the BSP ships none |
 | `bmp_app/` | the sampler task: owns the device, publishes the snapshot, holds the control surface |
-| `telemetry/` | the telemetry task: reads that surface, formats the wire, writes USART2 |
+| `telemetry/` | the telemetry task (reads that surface, formats the wire, writes USART2) and the control task (reads console commands) |
 
 ```
 src/                       inc/                      tests/
@@ -23,6 +23,7 @@ src/                       inc/                      tests/
   bmp_app/app.cpp            bmp180/regs.h
   telemetry/wire.cpp         bmp180/types.h
   telemetry/task.cpp         i2c/i2c.h
+  telemetry/control.cpp      telemetry/control.h
                              bmp_app/app.h
                              bmp_app/snapshot.h
                              telemetry/wire.h
@@ -64,9 +65,10 @@ It carries the bus recovery sequence: a slave left holding SDA by an interrupted
 
 `bmp_app_sampler_task` (`src/bmp_app/app.cpp`) is the only thing that ever
 opens `/dev/bmp180-0`. `bmp180_telemetry_task` (`src/telemetry/task.cpp`) drives
-the profile below and feeds the stream, but it does so entirely through the
-application layer's read and control surfaces - it holds no descriptor and
-issues no ioctl.
+the profile below and feeds the stream, and `bmp180_control_task`
+(`src/telemetry/control.cpp`) applies operator commands; both go entirely
+through the application layer's read and control surfaces - neither holds a
+descriptor or issues an ioctl.
 
 Code flow:
 1. Device init: open the device in RW mode (`O_RDWR` from datasheet).
@@ -130,6 +132,25 @@ This is the default path, not a build flag. `bmp180_telemetry_task` subscribes
 to the sampler, forwards each published sample to telemetry with the sampler's
 own timestamp, and reports acquisition errors on the edge. It is the only
 producer of `S` records. See `TESTING.md` §10.
+
+## Console commands
+
+`bmp180_control_task` (`src/telemetry/control.cpp`) reads the same USART2 the
+telemetry goes out on, at priority 4, below both other tasks. One command per
+line; anything else is discarded, and the task never writes to the console, so
+a capture stays parseable.
+
+| Line | Effect |
+|------|--------|
+| `O0`..`O3` | switch to that oversampling mode |
+| `R` | soft reset; the device returns to power-on defaults |
+
+The console is put into canonical mode with echo off at startup, so keystrokes
+do not land in the stream. Confirmation is the `oss` field of the following
+samples - the mode they were actually taken at. The first accepted command
+cancels the boot sweep (`telem_cancel_sweep`), since the sweep keys each block
+on getting the mode it asked for. **A capture used for validation is one where
+no command was typed.**
 
 ## Build
 

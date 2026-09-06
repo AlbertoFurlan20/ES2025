@@ -8,8 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-09-02
 
-Two tasks and one way to the sensor. The driver, the bus and the acquisition
-timing are untouched; what changed is who is allowed to talk to them.
+One way to the sensor, and an operator link back in. The driver, the bus and the
+acquisition timing are untouched; what changed is who is allowed to talk to them.
+
+### Added
+
+- **A control task on the console (`telemetry/control.cpp`).** The USART2 that
+  carries telemetry out now carries commands in, on PA3.
+  `bmp180_control_task` owns the read side and is the only task that reads
+  stdin. One command per line, anything else discarded:
+
+  | Line | Effect |
+  |------|--------|
+  | `O0`..`O3` | request that oversampling mode |
+  | `R` | request a soft reset; device returns to power-on defaults |
+
+  It is a consumer like the telemetry task: a command becomes a
+  `bmp_app_set_oss` or a `bmp_app_request_soft_reset`, applied by the sampler at
+  the top of its next cycle, so `oss` still has exactly one writer and no
+  consumer holds a descriptor.
+
+  The task never writes to the console. The wire format is frozen, so an echo or
+  an error message would appear in every capture as a line the parser has to
+  skip; for the same reason the console is put into canonical mode with echo off
+  at startup, since the default termios echoes what it receives. Confirmation
+  comes from the `oss` field of the following samples, which reports the mode
+  they were taken at rather than the mode that was asked for.
+
+  The first accepted command calls `telem_cancel_sweep`. The boot sweep steers
+  `oss` itself and keys each block on getting the mode it asked for, a condition
+  that can never match once an operator sets the mode, so the profile stops
+  rather than stalling the stream. **A capture used for validation is one where
+  no command was typed.**
 
 ### Changed
 
@@ -41,9 +71,10 @@ timing are untouched; what changed is who is allowed to talk to them.
   the analysis can tell a real interval from one spanning a gap. That is now the
   only meaning of `D`.
 
-- **The emitter task and the telemetry ring are gone; three tasks become two.**
-  `telem_emitter_task` and `TelemRing` existed so that a stalled UART could never
-  delay acquisition. Acquisition no longer goes anywhere near the console — the
+- **The emitter task and the telemetry ring are gone.** The image went from
+  three tasks to two on this change, and back to three when the control task was
+  added above. `telem_emitter_task` and `TelemRing` existed so that a stalled
+  UART could never delay acquisition. Acquisition no longer goes anywhere near the console — the
   sampler publishes into a snapshot and nothing else — so the queue sat between
   a producer and a consumer that had become the same task.
   `bmp180_telemetry_task` formats each record and writes it to USART2 itself,
@@ -55,6 +86,11 @@ timing are untouched; what changed is who is allowed to talk to them.
   |------|------|------|
   | `SAMP` | 2 | owns the fd, acquires, publishes, sends the sample event |
   | `TELE` | 3 | reads the surface, drives the sweep, writes USART2 |
+  | `CTRL` | 4 | blocks in `read()` on the console, applies commands |
+
+  `CTRL` sits below both for the same reason `TELE` sits below `SAMP`: it is
+  blocked in `read()` almost always, and an arriving command must not preempt a
+  publish that `TELE` is reading.
 
   What this costs: the blocking `write()` now happens in the task that also has
   to be running to observe publishes, so console backpressure can lose samples
@@ -132,7 +168,10 @@ timing are untouched; what changed is who is allowed to talk to them.
 ### Verified
 
 Three consecutive 150 s captures on 2026-09-02 — `20260902-165752`,
-`-170059`, `-170351`, about 13 640 samples each.
+`-170059`, `-170351`, about 13 640 samples each. Taken with `CTRL` created at
+priority 2 rather than 4; no command was typed during any of them, so the task
+stayed blocked in `read()` and never became runnable. The priority was corrected
+afterwards and the runtime ordering has not been re-measured on hardware.
 
 - `median_interval_us` is `5000 / 7000 / 10999 / 18999` in all three, identical
   to the 1.5.0 gate. The restructuring cost the acquisition path nothing.

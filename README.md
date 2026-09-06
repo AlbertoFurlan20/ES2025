@@ -61,6 +61,21 @@ Run from `C_src/`, or from anywhere by path. macOS and Linux.
 `make` and `make flash` in `C_src/` are equivalent to the first two; the root
 `CMakeLists.txt` exists for IDE builds.
 
+### Console commands
+
+The board reads commands on the same serial link it streams telemetry over, one
+per line. Anything else is ignored, and nothing is echoed back.
+
+| Line | Effect |
+|------|--------|
+| `O0`..`O3` | switch oversampling mode (ultra low power .. ultra high resolution) |
+| `R` | soft reset; the sensor returns to power-on defaults |
+
+Confirmation arrives as the `oss` field of the following samples. The first
+command cancels the boot oversampling sweep, so a capture meant for analysis is
+one where no command was typed. Details in
+[`C_src/README.md`](C_src/README.md).
+
 On Linux, OpenOCD needs udev rules before it can claim the ST-Link, and your
 user must be in the serial group (`dialout` on Debian/Ubuntu) to open the
 console. Both scripts print the fix when they hit it.

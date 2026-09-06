@@ -117,7 +117,7 @@ rtems_task Entrypoint(const rtems_task_argument ignored)
     // not preempt a publish being read one priority above it.
     setupTask(&sampler_task_id, "SAMP", 2, 4 * 1024, bmp_app_sampler_task);
     setupTask(&telemetry_task_id, "TELE", 3, 4 * 1024, bmp180_telemetry_task);
-    setupTask(&control_task_id, "CTRL", 2, 4 * 1024, bmp180_control_task);
+    setupTask(&control_task_id, "CTRL", 4, 4 * 1024, bmp180_control_task);
 
 
     rtems_task_suspend(RTEMS_SELF);
