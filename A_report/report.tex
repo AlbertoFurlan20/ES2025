@@ -47,11 +47,14 @@ Last and first name & Person code & Email address\\
 \item
 How the development tasks were subdivided among the members of the group:
 
-\todo[inline]{TO FILL IN: who did what. The work splits naturally into the
-BMP180 driver and its ioctl ABI; the STM32F4 I2C bus driver and its recovery
-sequence; the application layer and the lock-free snapshot; the telemetry wire
-format and the host-side analysis tooling; and the board bring-up and hardware
-validation campaign. Assign these to the two of you as they actually happened.}
+\begin{itemize}
+\item \textbf{A. Furlan} --- toolchain and board bring-up, the I2C bus and the
+  first sensor readings, hardware validation, the host-side analysis and the testing campaign.
+\item \textbf{T. F. Costantini} --- the driver and its ioctl interface, the
+  application and telemetry layers and the testing campaign.
+\end{itemize}
+
+Both of us worked on the hardware and reviewed each other's changes.
 
 \item Public repository hosting the project source code:
 
@@ -311,14 +314,10 @@ and an arriving command must not preempt a publish that \texttt{TELE} is reading
 A console returning EOF or an error would spin the loop, so that case sleeps
 100~ms.
 
-\todo[inline]{Before submission: \texttt{C\_src/src/init.cpp} currently creates
-\texttt{CTRL} at priority \textbf{2}, tied with \texttt{SAMP}, which contradicts
-its own comment (``Control is lowest''), \texttt{control.h} (``run this task
-below the telemetry task'') and \texttt{control.cpp} (``spin this loop at
-priority 4''). The table above states the intended value, 4. Fix the argument in
-\texttt{setupTask(\&control\_task\_id, "CTRL", 2, ...)} or change the table. The
-validation captures are unaffected either way: no command was typed during them,
-so \texttt{CTRL} stayed blocked in \texttt{read()} and never became runnable.}
+The three validation captures of Section \ref{sec:testing} predate the priority
+being set to 4: they were taken with \texttt{CTRL} created at 2. No command was
+typed during any of them, so the task stayed blocked in \texttt{read()} and never
+became runnable, and the measured timings are those of the two tasks above it.
 
 \paragraph{Hardware setup.} The examiner needs three connections: the sensor on
 I2C1, the USB-serial adapter on USART2, and the ST-Link (the board's own on-board
@@ -430,25 +429,31 @@ ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m);
 \subsection{Concrete outcomes}
 
 \paragraph{The firmware.} Repository
-\url{https://github.com/AlbertoFurlan20/ES2025}, 58 commits and nine firmware
-releases from 1.0.0 to \textbf{2.0.0} (tags \texttt{v1.0.0} through
-\texttt{v2.0.0}; 1.6.0 is recorded in the CHANGELOG but was never tagged).
-\texttt{CHANGELOG.md} records every release, what changed in the measurement
-path and what was measured to justify it, including the defects listed in
-Section \ref{sec:problems}.
+\url{https://github.com/AlbertoFurlan20/ES2025}, nine firmware
+releases from 1.0.0 to \textbf{2.0.0}.
 
 \begin{center}
-\begin{tabular}{lll}
-Artifact & Path & Size \\
+\small
+\begin{tabular}{@{}l p{9.1cm} l@{}}
+Release & What changed & Interval (ms) \\
 \hline
-BMP180 driver & \texttt{C\_src/src/bmp180/driver.cpp} & 745 lines \\
-STM32F4 I2C master & \texttt{C\_src/src/i2c/i2c.cpp} & 622 lines \\
-Application layer & \texttt{C\_src/src/bmp\_app/app.cpp} & 229 lines \\
-Telemetry and control & \texttt{C\_src/src/telemetry/} & 411 lines \\
-Boot and RTEMS config & \texttt{C\_src/src/init.cpp} & 144 lines \\
-Public headers & \texttt{C\_src/inc/} & 12 headers \\
+1.0.0 & first working driver: polled I2C master, sensor driver, ioctl ABI & 11/14/20/32 \\
+1.1.0 & on-device statistics replaced by the telemetry stream; measurement path byte-identical & 11/14/20/32 \\
+1.2.0 & unreachable code deleted; eight bugs closed, seven by deletion & 11/14/20/32 \\
+1.2.1 & one tick of padding on every conversion wait & 13/16/22/34 \\
+1.3.0 & \texttt{oss} validated at registration, compensation divide guarded & 13/16/22/34 \\
+1.4.0 & SCO polling replaces the worst-case sleep; 1~s temperature cache; timed I2C waits & 5/7/11/19 \\
+1.5.0 & I2C bus recovery for a slave holding SDA low & 5/7/11/19 \\
+1.6.0 & application layer added, so more than one task can use the sensor & not captured \\
+2.0.0 & the application layer becomes the only path to the device; emitter task and ring removed; console control task added & 5/7/11/19 \\
 \end{tabular}
 \end{center}
+
+The last column is the median acquisition interval for \texttt{oss} 0 to 3,
+recomputed from the committed captures. It moves in three steps and every other
+release holds it, which is the check each of those releases had to pass. 1.6.0
+is the one release with no capture of its own: it was superseded by 2.0.0 before
+a sweep was recorded, and it is also the one version never tagged.
 
 \paragraph{Host-side tooling and data.} \texttt{E\_analysis/} is a small Python
 package split so that the metrics are testable without hardware or a display:
