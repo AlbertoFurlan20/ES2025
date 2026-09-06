@@ -639,36 +639,48 @@ reflashing to clear.
 
 \subsection{Learning outcomes}
 
-\todo[inline]{TO FILL IN: one bullet per member, in your own words. The
-collective points below are true of the project and can stay; what is missing is
-which of them each of you would put first, and what you expect to do with it.}
-
-What the project taught us:
+Because we arrived knowing the buses and the device, almost everything we
+learned sits on the operating-system side of that line. What changed is not that we can now read a datasheet
+or drive an I2C transfer, but that we treat both as contracts a scheduler has to
+be designed around.
 
 \begin{itemize}
 \item \textbf{How a real-time kernel's device model fits together.} What it
   means for an IMFS node to \emph{own} a device, why the teardown order carries
   the safety argument, how an ioctl ABI is designed so it can be frozen, and how
   a bus driver and a device driver meet through a framework interface rather
-  than through each other.
-\item \textbf{That bringing up a peripheral means registers and nothing else.}
-  Clock gating, alternate-function mux, CCR clock math; and that an I2C bus has
-  a failure mode, a slave holding SDA low, that no amount of retrying fixes and
-  that has to be designed for explicitly.
+  than through each other. The Linux driver model gave us the vocabulary; RTEMS
+  taught us how little of it transfers unchanged.
+\item \textbf{That knowing a protocol is not the same as owning a master.} We
+  could read the I2C waveform before we started and still had to write 622 lines
+  of clock gating, alternate-function mux and CCR clock math to produce one. The
+  lesson that did not come from the protocol is the wedge: a slave holding SDA
+  low survives every reset, no amount of retrying clears it, and recovery has to
+  be designed in rather than discovered.
 \item \textbf{That lock-free is a scheduling decision before it is a performance
   one.} The published snapshot is a seqlock because an RTEMS mutex held by a
   low-priority reader would block the acquisition task until the
   priority-inheritance handoff completed. The same reasoning sets the task
   priorities, and getting it wrong cost a measured 2.70~s console blackout.
+\item \textbf{That without a debugger, statistics are the instrument.} Print
+  statements perturb the timing they are supposed to observe, so the only way to
+  know whether a change helped was to emit raw records, capture them on the host
+  and compute the numbers there. Several defects were invisible in any single
+  reading and obvious only in the noise-versus-oversampling curve --- the
+  one-tick conversion-timeout bug among them.
 \end{itemize}
 
-We had no debugger on the running system, and print statements change the timing
-they are supposed to observe, so the only way to know whether a change helped was
-to emit raw records, capture them on the host and compute the statistics there.
-Several of our defects were invisible in any single reading and obvious only in
-the noise-versus-oversampling curve. The datasheet turned out to be a timing
-contract as much as a feature list: the conversion-time table is a specification
-the driver has to honour, and one tick of rounding against it was a real bug.
+Asked which of these we would put first, we answer differently.
+\textbf{A.~Furlan} takes the measurement discipline: that a firmware change is
+not done until a capture says what it did, and that a version number has to mean
+something about the measurement path. It is the habit most directly reusable
+outside this project, and the one to carry into any future work where the system
+under test cannot be stopped and inspected.
+\textbf{T.~F.~Costantini} takes the driver--kernel interface: designing an ioctl
+ABI and a teardown order that are safe to freeze, and the realisation that the
+concurrency choice and the priority assignment are the same decision made twice.
+That is the part worth reusing when the next system is an RTOS rather than
+Linux.
 
 \paragraph{Questions that remained unanswered.} Self-heating at this duty cycle
 is \emph{not} characterised: measured thermal drift varied by two orders of
@@ -692,8 +704,25 @@ path.
 
 \subsection{Existing knowledge}
 
-\todo[inline]{TO FILL IN: replace the list below with the courses you actually
-took, and keep the one-line reason for each.}
+Both of us started with a solid embedded background: C, the Linux kernel and its
+driver model, shell scripting for build and capture automation, and the serial
+buses this project rests on --- UART/USART, I2C and SPI --- including reading
+timing diagrams and datasheets as specifications rather than reference material.
+Sensor interfacing at the register level was familiar territory, so the BMP180
+calibration arithmetic and its conversion-time table were a known kind of
+problem. Robotics work, and ROS in particular, had also made sensor data
+familiar as something published, timestamped and consumed by someone else,
+which is where the telemetry record format and the snapshot-publishing model
+came from.
+
+That background covered the device and the bus, not the operating system around
+them. RTEMS itself, the RSB and \texttt{waf} build path, the BSP configuration
+surface, and the classic API's tasks, semaphores and rate-monotonic periods were
+new to us, as was the discipline of a system with no debugger and no printf that
+does not perturb what it measures. ROS had given us publishers and subscribers
+but hidden every question this project is about: there was no middleware here to
+own the buffer, the timing or the priorities. The gap between what we knew and what the
+project needed sat almost entirely on the RTOS side.
 
 \subsection{Problems encountered}
 \label{sec:problems}
