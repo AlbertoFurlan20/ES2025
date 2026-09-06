@@ -79,8 +79,8 @@ the deliverable is the software stack that turns it into an ordinary RTEMS
 device node, \texttt{/dev/bmp180-0}, that any task can \texttt{open()} and
 \texttt{ioctl()}.
 
-Delivering that required four pieces rather than one, because the BSP does not
-provide everything the driver needs:
+It took four modules rather than one, because the BSP does not provide
+everything the driver needs:
 
 \begin{center}
 \begin{tabular}{lll}
@@ -89,7 +89,7 @@ Module & Directory & What it is \\
 \texttt{bmp180/} & \texttt{C\_src/src/bmp180/} & the sensor driver --- the scope of the assignment \\
 \texttt{i2c/} & \texttt{C\_src/src/i2c/} & a polled STM32F4 I2C master, since the BSP ships none \\
 \texttt{bmp\_app/} & \texttt{C\_src/src/bmp\_app/} & application layer: one sampler task owns the device \\
-\texttt{telemetry/} & \texttt{C\_src/src/telemetry/} & measurement stream over USART2, for host-side analysis \\
+\texttt{telemetry/} & \texttt{C\_src/src/telemetry/} & measurement stream out over USART2, operator commands in \\
 \end{tabular}
 \end{center}
 
@@ -97,8 +97,7 @@ The stack is complemented by a host-side Python package
 (\texttt{E\_analysis/}) that captures the serial stream and computes the noise,
 timing and drift statistics used to validate the driver against the datasheet.
 No statistics are computed on the target: the board emits raw records and the
-numbers are derived on the host, where they can be recomputed without
-reflashing.
+numbers are derived on the host, so they can be recomputed without reflashing.
 
 \begin{itemize}
 \item \textbf{Why it is important for the AOS course?}
@@ -111,31 +110,29 @@ about the boundary between an operating system and the devices it drives:
 \item \emph{The driver model.} The driver plugs into the RTEMS generic I2C
   framework (\texttt{libdev/i2c}). A \texttt{bmp180\_dev\_t} has an
   \texttt{i2c\_dev} as its first member so the framework can upcast safely, and
-  registration publishes an IMFS node that owns the device --- so the node's
-  destroy handler, not the caller, is what frees it. Getting that ownership
-  backwards is a use-after-free, and we hit exactly that (Section
-  \ref{sec:problems}).
+  registration publishes an IMFS node that owns the device, so the node's
+  destroy handler frees it rather than the caller. Getting that ownership
+  backwards is a use-after-free, which we hit (Section \ref{sec:problems}).
 \item \emph{The system-call surface.} The public interface is a frozen ioctl
   ABI (\texttt{\_IOR}/\texttt{\_IOW} encodings, Section
   \ref{sec:design}), which is the concrete form of the userspace/kernel contract
   discussed in the course.
-\item \emph{Scheduling and priority.} The final design is two tasks at fixed
-  priorities, and the priority \emph{order} is load-bearing rather than
-  incidental: the consumer must sit \emph{below} the producer. We measured a
-  2.70~s console blackout caused by getting the interaction wrong --- a
-  priority-2 task busy-looping on a failing ioctl starved every task below it.
+\item \emph{Scheduling and priority.} The final design is three tasks at fixed
+  priorities, with every consumer \emph{below} the producer. Getting the
+  interaction wrong cost a measured 2.70~s console blackout: a priority-2 task
+  busy-looping on a failing ioctl starved every task below it.
 \item \emph{Concurrency without blocking the real-time path.} The application
-  layer publishes measurements through a seqlock rather than a mutex,
-  specifically so that a reader can never delay acquisition.
+  layer publishes measurements through a seqlock rather than a mutex, so a
+  reader can never delay acquisition.
 \item \emph{Bounded blocking and fault containment.} Every I2C poll has a 5~ms
   deadline and every conversion wait a datasheet-derived maximum, so a
   disconnected or wedged sensor degrades into an error record instead of a
   system freeze.
-\item \emph{Timing as a measurable property.} Because RTEMS
+\item \emph{Timing as a measurable property.} Because
   \texttt{rtems\_task\_wake\_after(n)} blocks for between $n-1$ and $n$ ticks,
   an unpadded conversion timeout can expire while the sensor is still within
-  specification. That single tick of rounding was a real, stochastic defect in
-  our first release, visible only in the noise statistics.
+  specification. That one tick of rounding was a stochastic defect in our first
+  release, visible only in the noise statistics.
 \end{itemize}
 
 This is not an open source project contribution, so there is no upstream
@@ -145,7 +142,7 @@ maintainer correspondence to report.
 \label{sec:design}
 
 The full source is in the repository under \texttt{C\_src/}; what follows is the
-structure, not the code.
+structure.
 
 \paragraph{Layering.} One folder per module, mirrored across \texttt{src/},
 \texttt{inc/} and \texttt{tests/}. Only \texttt{inc/} is on the include path,
@@ -172,18 +169,16 @@ the peripheral latches BUSY and every transfer returns \texttt{-EBUSY}. Before
 this was added, only a power cycle cleared it. Recovery takes the pins away from
 the peripheral, drives up to nine SCL pulses by hand (eight data bits plus the
 ACK), issues a manual STOP, software-resets the peripheral and restores the
-configured clock. A line shorted to ground cannot be freed this way and is
-reported as such --- an interrupted transfer is recoverable, a shorted line is
-not, and the two must not look alike.
+configured clock. A line shorted to ground cannot be freed this way
+and is reported as a distinct error.
 
 \paragraph{The sensor driver (\texttt{bmp180/}).} \texttt{bmp180\_register()}
 allocates the device through the framework, reads the chip ID register
-(\texttt{0xD0}, expecting \texttt{0x55}) and publishes the node. That first I2C
-traffic is deliberately minimal: a registration that succeeds proves the wiring,
+(\texttt{0xD0}, expecting \texttt{0x55}) and publishes the node. A registration that succeeds proves the wiring,
 not the calibration. The eleven 16-bit calibration coefficients are read once,
 lazily, on the first measurement and cached in the device context.
-\texttt{bmp180\_unregister()} goes through \texttt{unlink()}, which is the only
-correct order, since the IMFS node owns the device.
+\texttt{bmp180\_unregister()} goes through \texttt{unlink()}, since the IMFS node
+owns the device.
 
 The public interface exposed on the node is:
 
@@ -202,7 +197,7 @@ is implemented verbatim from datasheet section 3.5 (Figure 4) in
 \texttt{int32\_t}/\texttt{int64\_t} arithmetic, so the image carries no
 floating-point dependency in the measurement path.
 
-Two design decisions inside the driver are worth naming:
+Two design decisions inside the driver:
 
 \begin{itemize}
 \item \emph{Conversion waits are polled, not slept through.} The driver sleeps
@@ -218,15 +213,14 @@ Two design decisions inside the driver are worth naming:
   conversion per measurement.
 \end{itemize}
 
-\paragraph{The application layer (\texttt{bmp\_app/}).} A driver that only one
-task can use is not much of a driver. \texttt{bmp\_app\_sampler\_task} is the
-only thing in the system that opens \texttt{/dev/bmp180-0}: it acquires
-back-to-back and publishes each measurement into a one-deep snapshot. Consumers
-call \texttt{bmp\_app\_read()}, which never blocks and adds no bus traffic, and
-change the mode or the temperature interval through setters the sampler applies
-at the top of its next cycle. That indirection is the point --- \texttt{oss} has
-exactly one writer, so two consumers cannot fight over the mode, and no consumer
-holds a descriptor on the device.
+\paragraph{The application layer (\texttt{bmp\_app/}).}
+\texttt{bmp\_app\_sampler\_task} is the only task that opens
+\texttt{/dev/bmp180-0}: it acquires back-to-back and publishes each measurement
+into a one-deep snapshot. Consumers call \texttt{bmp\_app\_read()}, which never
+blocks and adds no bus traffic, and change the mode or the temperature interval
+through setters the sampler applies at the top of its next cycle. \texttt{oss}
+therefore has exactly one writer, and no consumer holds a descriptor on the
+device.
 
 The snapshot is a \textbf{seqlock}, not a mutex: the sequence counter is odd
 while a publish is in progress and even when the payload is stable, and readers
@@ -234,12 +228,9 @@ retry. An RTEMS mutex held by a low-priority reader would block the sampler
 until the priority-inheritance handoff completed; here the reader simply retries
 and the writer never waits at all.
 
-The layer is honest about staleness rather than hiding it: \emph{a successful
-read does not mean a fresh reading}. A failed cycle does not publish, so a
-sensor that stops answering leaves the last good sample --- with its last good
-timestamp --- in place indefinitely. The alternative, stamping stale values with
-a fresh timestamp, is precisely the class of defect we had to fix earlier.
-Consumers detect it by comparing \texttt{seq} against their previous read, or
+\emph{A successful read does not mean a fresh reading.} A failed cycle does not
+publish, so a sensor that stops answering leaves the last good sample, with its
+last good timestamp, in place indefinitely. Consumers detect it by comparing \texttt{seq} against their previous read, or
 \texttt{t\_us} against the current uptime, and learn the reason from
 \texttt{bmp\_app\_last\_error()}.
 
@@ -247,8 +238,7 @@ Consumers detect it by comparing \texttt{seq} against their previous read, or
 \texttt{bmp180\_telemetry\_task} is a consumer like any other: it holds no
 descriptor and issues no ioctl. It subscribes to the sampler
 (\texttt{BMP\_APP\_EVENT\_SAMPLE}), drives the validation profile through
-\texttt{bmp\_app\_set\_oss()}, and writes records to USART2. The wire format is
-frozen at v1 and is deliberately machine-readable rather than human prose:
+\texttt{bmp\_app\_set\_oss()}, and writes records to USART2. The wire format is frozen at v1 and machine-readable:
 
 \begin{center}
 \begin{tabular}{ll}
@@ -264,10 +254,38 @@ Record & Meaning \\
 The timestamp in an \texttt{S} record is the one the \emph{sampler} took at
 acquisition, never the time the telemetry task happened to run, because the host
 derives the achieved rate and the jitter from differences between consecutive
-records. Errors are emitted on the edge --- a disconnected sensor fails hundreds
-of times a second and would otherwise flood the console.
+records. Errors are emitted on the edge: a disconnected sensor fails hundreds of
+times a second and would otherwise flood the console.
 
-\paragraph{Tasks and priorities.} The image runs two tasks after
+\paragraph{The control surface (\texttt{telemetry/control.cpp}).} The same
+USART2 that carries telemetry out carries operator commands in, on \texttt{PA3}.
+\texttt{bmp180\_control\_task} owns the read side and is the only task that reads
+\texttt{stdin}. Like the telemetry task it is a consumer of \texttt{bmp\_app}: a
+command becomes a \texttt{bmp\_app\_set\_oss()} or a
+\texttt{bmp\_app\_request\_soft\_reset()}, applied by the sampler at the top of
+its next cycle. One command per line:
+
+\begin{center}
+\begin{tabular}{ll}
+Line & Effect \\
+\hline
+\texttt{O0}--\texttt{O3} & switch to that oversampling mode \\
+\texttt{R} & soft reset; the device returns to power-on defaults \\
+\end{tabular}
+\end{center}
+
+Anything else is discarded. The task never writes to the console, since an echo
+or an error message would appear in every capture as a line the host parser has
+to skip; the console is put into canonical mode with echo off at startup for the
+same reason. Confirmation comes from the \texttt{oss} field of the next samples,
+which reports the mode they were taken at.
+
+The first accepted command cancels the boot sweep (\texttt{telem\_cancel\_sweep}):
+the sweep steers \texttt{oss} itself and keys each block on getting the mode it
+asked for, a condition that can never match again once an operator sets the mode.
+A capture used for validation is one where no command was typed.
+
+\paragraph{Tasks and priorities.} The image runs three tasks after
 initialisation:
 
 \begin{center}
@@ -276,6 +294,7 @@ Task & Priority & Role \\
 \hline
 \texttt{SAMP} & 2 & owns the fd, acquires, publishes, sends the sample event \\
 \texttt{TELE} & 3 & reads the surface, drives the sweep, writes USART2 \\
+\texttt{CTRL} & 4 & blocks in \texttt{read()} on the console, applies commands \\
 \end{tabular}
 \end{center}
 
@@ -286,6 +305,20 @@ because the sampler sleeps inside every conversion wait. Symmetrically, the
 sampler yields a tick after a \emph{failed} cycle --- without that, a
 disconnected sensor turns it into a busy-loop at priority 2 and nothing below it
 runs to report the fault.
+
+\texttt{CTRL} sits below both: it is blocked in \texttt{read()} almost always,
+and an arriving command must not preempt a publish that \texttt{TELE} is reading.
+A console returning EOF or an error would spin the loop, so that case sleeps
+100~ms.
+
+\todo[inline]{Before submission: \texttt{C\_src/src/init.cpp} currently creates
+\texttt{CTRL} at priority \textbf{2}, tied with \texttt{SAMP}, which contradicts
+its own comment (``Control is lowest''), \texttt{control.h} (``run this task
+below the telemetry task'') and \texttt{control.cpp} (``spin this loop at
+priority 4''). The table above states the intended value, 4. Fix the argument in
+\texttt{setupTask(\&control\_task\_id, "CTRL", 2, ...)} or change the table. The
+validation captures are unaffected either way: no command was typed during them,
+so \texttt{CTRL} stayed blocked in \texttt{read()} and never became runnable.}
 
 \paragraph{Hardware setup.} The examiner needs three connections: the sensor on
 I2C1, the USB-serial adapter on USART2, and the ST-Link (the board's own on-board
@@ -334,7 +367,7 @@ The resulting setting can be confirmed in the installed
 place, \texttt{.env/setup.env}, a single \texttt{KEY=VALUE} line copied from the
 committed example. \texttt{compile.sh}, \texttt{flash.sh}, \texttt{Makefile} and
 the root \texttt{CMakeLists.txt} all read that file, so the four build paths
-cannot drift apart.
+cannot drift.
 
 \begin{verbatim}
 cp .env/setup.env.example .env/setup.env
@@ -372,8 +405,8 @@ S 1054220 244 96825 0
 
 The first line is a hardware-independent self-test of the Bosch compensation
 math, run at every boot against the datasheet worked example; a \texttt{FAIL}
-there means the arithmetic is broken independently of any wiring problem. The
-firmware then registers the bus, registers the sensor, and starts streaming.
+there means the arithmetic is broken, independently of any wiring problem. The
+firmware then registers the bus and the sensor and starts streaming.
 
 \paragraph{Using the driver from your own task.} Two ways, depending on whether
 you want to own the device:
@@ -384,6 +417,7 @@ you want to own the device:
 bmp_app_sample_t s;
 if (bmp_app_read(&s)) { /* s.pressure_pa, s.temperature_cdeg, s.oss, s.seq */ }
 bmp_app_set_oss(BMP180_OSS_ULTRA_HIGH_RES);   /* applied next cycle */
+bmp_app_request_soft_reset();                 /* power-on defaults */
 
 /* Directly on the device node -- only if nothing else owns it. */
 int fd = open("/dev/bmp180-0", O_RDWR);
@@ -396,12 +430,12 @@ ioctl(fd, BMP180_IOCTL_READ_MEASUREMENT, &m);
 \subsection{Concrete outcomes}
 
 \paragraph{The firmware.} Repository
-\url{https://github.com/AlbertoFurlan20/ES2025}, 53 commits and ten firmware
+\url{https://github.com/AlbertoFurlan20/ES2025}, 58 commits and nine firmware
 releases from 1.0.0 to \textbf{2.0.0} (tags \texttt{v1.0.0} through
-\texttt{v1.5.0}). \texttt{CHANGELOG.md} records
-every release, what changed in the measurement path and what was measured to
-justify it, which is also the honest record of the defects listed in Section
-\ref{sec:problems}.
+\texttt{v2.0.0}; 1.6.0 is recorded in the CHANGELOG but was never tagged).
+\texttt{CHANGELOG.md} records every release, what changed in the measurement
+path and what was measured to justify it, including the defects listed in
+Section \ref{sec:problems}.
 
 \begin{center}
 \begin{tabular}{lll}
@@ -410,9 +444,9 @@ Artifact & Path & Size \\
 BMP180 driver & \texttt{C\_src/src/bmp180/driver.cpp} & 745 lines \\
 STM32F4 I2C master & \texttt{C\_src/src/i2c/i2c.cpp} & 622 lines \\
 Application layer & \texttt{C\_src/src/bmp\_app/app.cpp} & 229 lines \\
-Telemetry & \texttt{C\_src/src/telemetry/} & 268 lines \\
-Boot and RTEMS config & \texttt{C\_src/src/init.cpp} & 139 lines \\
-Public headers & \texttt{C\_src/inc/} & 11 headers \\
+Telemetry and control & \texttt{C\_src/src/telemetry/} & 411 lines \\
+Boot and RTEMS config & \texttt{C\_src/src/init.cpp} & 144 lines \\
+Public headers & \texttt{C\_src/inc/} & 12 headers \\
 \end{tabular}
 \end{center}
 
@@ -422,9 +456,9 @@ package split so that the metrics are testable without hardware or a display:
 numbers), \texttt{plot.py} (numbers to charts), plus \texttt{capture.sh}, which
 resets the target over the ST-Link and writes a timestamped log, plus
 \texttt{make\_report\_figures.py}, which renders the figure set used in this
-report. The repository carries 44 captures taken during development, including
-the ones that record the failures, so every sweep, timing and recovery number
-quoted in this report can be recomputed from committed data without a board.
+report. The repository carries 44 captures taken during development, including the ones
+that record failures, so every sweep, timing and recovery number quoted here can
+be recomputed from committed data without a board.
 
 \paragraph{Tests.} Two host-compiled suites that need no toolchain and no
 board (\texttt{make -C C\_src/tests run}): the telemetry formatter, and the
@@ -450,15 +484,13 @@ captures}, committed as
 \texttt{E\_analysis/captures/20260902-165752.log},
 \texttt{-170059.log} and \texttt{-170351.log}. Each carries about 13\,640
 samples, and all three report \textbf{zero errors, zero dropped records and zero
-malformed lines}. Zero drops is the load-bearing result: it is what shows that
-emission never throttled acquisition, which is the premise every timing figure
-rests on.
+malformed lines}. Zero drops is what shows that emission never throttled
+acquisition, the premise every timing figure rests on.
 
 The acceptance gate for the release was that the four median acquisition
-intervals be unchanged from the previous one, since the restructuring was
-supposed to touch who may talk to the device and not the acquisition path. They
-were identical in all three runs, and identical to the figures recorded for
-1.5.0:
+intervals be unchanged from the previous one, since the restructuring touched
+who may talk to the device and not the acquisition path. They were identical in
+all three runs and identical to the figures recorded for 1.5.0:
 
 \begin{center}
 \begin{tabular}{lllll}
@@ -474,19 +506,17 @@ were identical in all three runs, and identical to the figures recorded for
 The interval column is the same in all three runs; the mean-pressure column is
 run 1 alone, since absolute pressure moves between runs with the weather. Within
 a run, mean pressure is constant across the four modes to within 4~Pa in run 1
-and 7~Pa in the worst of the three --- as it must be, since the true pressure
-does not depend on how the sensor is sampled.
+and 7~Pa in the worst of the three, as it must be: the true pressure does not
+depend on how the sensor is sampled.
 
-\paragraph{The measured history.} The gate above is a comparison against one
-previous release, but every release was captured the same way, so the whole
-development history can be read off the committed data. Twenty-two captures
-recorded a complete sweep across eight firmware versions; the remaining
-committed captures are deliberate failures --- wedged buses, resets landing
-mid-transfer --- and are excluded here because a partial sweep is not comparable
-with anything. One of the two 1.5.0 points is the forced bus-recovery build of
-Section \ref{sec:problems} rather than the release binary; it is kept because
-its four intervals are identical to the release's, which is precisely the check
-that build exists to pass.
+\paragraph{The measured history.} Every release was captured the same way, so
+the whole development history can be read off the committed data. Twenty-two
+captures recorded a complete sweep across eight firmware versions; the remaining
+committed captures are deliberate failures (wedged buses, resets landing
+mid-transfer) and are excluded, since a partial sweep is not comparable. One of
+the two 1.5.0 points is the forced bus-recovery build of Section
+\ref{sec:problems} rather than the release binary; it is kept because its four
+intervals are identical to the release's, the check that build exists to pass.
 
 \begin{center}
 \includegraphics[width=\textwidth]{../E_analysis/figures/v2.0.0/interval_history.png}
@@ -502,43 +532,37 @@ in \texttt{CHANGELOG.md}:
   \emph{slower} per sample, deliberately. Every conversion constant gained one
   tick of padding, because \texttt{rtems\_task\_wake\_after(n)} blocks for
   between $n-1$ and $n$ ticks and the unpadded waits were occasionally expiring
-  while the sensor was still converting. This is the only step in the project
-  where we paid measured throughput for correctness.
+  while the sensor was still converting: throughput paid for correctness.
 \item \textbf{1.4.0 onwards --- 5 / 7 / 11 / 19~ms.} Between 1.7 and 2.6 times
   faster depending on the mode, from two changes at once whose contributions
   separate cleanly. The temperature cache removes one whole conversion, which is
   the same 6~ms whatever the mode, so it dominates the \emph{ratio} at
   \texttt{oss=0} where the cycle was shortest to begin with. SCO polling saves
   the gap between a conversion's padded maximum and its typical time, which
-  grows with the mode --- 3~ms at \texttt{oss=0} against 10~ms at
-  \texttt{oss=3} --- so it dominates the \emph{absolute} saving at the top mode,
-  where 15 of the 34~ms disappear. The two changes are: the fixed
-  worst-case sleep was replaced by polling the sensor's SCO bit, so a cycle ends
-  when the conversion actually ends rather than at its datasheet maximum, and
-  the temperature cache means most cycles skip the temperature conversion
-  entirely. The padded maxima did not go away --- they became the timeout.
+  grows with the mode (3~ms at \texttt{oss=0} against 10~ms at \texttt{oss=3}),
+  so it dominates the \emph{absolute} saving at the top mode, where 15 of the
+  34~ms disappear. Polling the SCO bit replaced the fixed worst-case sleep, so a
+  cycle ends when the conversion ends rather than at its datasheet maximum, and
+  most cycles skip the temperature conversion entirely. The padded maxima became
+  the timeout rather than the wait.
 \end{itemize}
 
-Release 2.0.0 lands exactly on the 1.4.0 line, which is the result the
-restructuring had to produce: moving every consumer off the device and behind an
-application layer was not allowed to cost the acquisition path anything, and it
-did not.
+Release 2.0.0 lands on the 1.4.0 line: moving every consumer off the device and
+behind an application layer cost the acquisition path nothing.
 
 \begin{center}
 \includegraphics[width=\textwidth]{../E_analysis/figures/v2.0.0/noise_history.png}
 \end{center}
 
-Noise tells the opposite story, and that is also the correct one. Across all
-eight versions each mode's per-version mean stays inside a band at most about
-2~Pa wide, near its datasheet figure, with no trend: the firmware changes moved timing, structure
-and fault behaviour, and none of them made the sensor quieter or noisier,
-because noise is a property of the part and the oversampling setting. The two
-eras are measured with different columns --- whole-block RMS before the
-temperature cache existed, median within-segment RMS after it --- and the chart
-marks the boundary rather than blending them, because with the cache off the
-segments are two or three samples long and their spread understates the noise.
-The one visible outlier, \texttt{oss=0} at 2.0.0, is the post-boot settling
-transient identified below.
+Noise shows no such steps. Across all eight versions each mode's per-version
+mean stays inside a band at most about 2~Pa wide, near its datasheet figure,
+with no trend: the firmware changes moved timing, structure and fault behaviour,
+none of which make the sensor quieter or noisier. The two eras are measured with
+different columns, whole-block RMS before the temperature cache existed and
+median within-segment RMS after it, and the chart marks the boundary rather than
+blending them: with the cache off the segments are two or three samples long and
+their spread understates the noise. The one visible outlier, \texttt{oss=0} at
+2.0.0, is the post-boot settling transient identified below.
 
 Pressure noise is reported per mode as the median within-segment RMS, not the
 whole-block RMS. The driver compensates every reading in an interval against one
@@ -562,17 +586,15 @@ Across the three runs:
 \includegraphics[width=0.78\textwidth]{../E_analysis/figures/v2.0.0/noise_across_runs.png}
 \end{center}
 
-Oversampling demonstrably works --- noise falls by roughly a factor of two from
-\texttt{oss=0} to \texttt{oss=2} in every run --- but we will not claim the
-monotonicity criterion as passed. It holds across the first three modes in all
-three runs; at the \texttt{oss=2} to \texttt{oss=3} step it holds in one run of
-three.
+Oversampling works: noise falls by roughly a factor of two from \texttt{oss=0}
+to \texttt{oss=2} in every run. We do not claim the monotonicity criterion as
+passed, though. It holds across the first three modes in all three runs; at the
+\texttt{oss=2} to \texttt{oss=3} step it holds in one run of three.
 
-We checked the obvious explanation and it does not survive. Since the sweep
-visits each mode once in sequence, a block's exposure to real atmospheric
-movement grows with the mode --- 2.5~s of wall clock at \texttt{oss=0} against
-9.5~s at \texttt{oss=3} --- so we fitted and removed a linear pressure trend
-from each block. At \texttt{oss=3} detrending changes almost nothing (3.22, 4.32
+The obvious explanation does not survive. Since the sweep visits each mode once
+in sequence, a block's exposure to atmospheric movement grows with the mode
+(2.5~s of wall clock at \texttt{oss=0} against 9.5~s at \texttt{oss=3}), so we
+fitted and removed a linear pressure trend from each block. At \texttt{oss=3} detrending changes almost nothing (3.22, 4.32
 and 3.57~Pa become 3.92, 4.14 and 3.99~Pa), so within-block drift is \emph{not}
 what puts that mode above \texttt{oss=2}. What remains is a difference of well
 under 1~Pa against a datasheet separation of 1~Pa and run-to-run scatter of the
@@ -584,30 +606,29 @@ The same test does explain the other anomaly. \texttt{oss=0} reads above its
 datasheet figure in two runs of three, and it is the first block after boot: its
 fitted trend is $-6.0$ and $-7.7$~Pa/s in those two runs, an order of magnitude
 steeper than any other block. Detrended, those blocks read 6.19 and 5.90~Pa
-against a datasheet 6.0. The excess is a settling transient the sweep rides
-through, not sensor noise --- which is an argument for discarding rather more
-than three warm-up samples.
+against a datasheet 6.0: a settling transient the sweep rides through, not
+sensor noise, and an argument for discarding more than three warm-up samples.
 
-The structure of the profile is visible directly in the stream: the three short
-sweep blocks, the long continuous run at \texttt{oss=2}, and the compensation
-staircase produced by the one-second temperature cache.
+The profile is visible directly in the stream: the three short sweep blocks, the
+long continuous run at \texttt{oss=2}, and the compensation staircase produced by
+the one-second temperature cache.
 
 \begin{center}
 \includegraphics[width=\textwidth]{../E_analysis/figures/v2.0.0/pressure_series.png}
 \end{center}
 
 Fault behaviour was verified on earlier builds of the same sampler and is quoted
-as such. Pulling SDA during a run --- measured on the build immediately
-preceding the current structure, and recorded in \texttt{TESTING.md} section 10;
-that particular capture file is not among the committed ones --- produced
-exactly one \texttt{E 5} (\texttt{EIO}) record 9\,995~$\mu$s after the last
-sample, samples stopped rather than repeating with fresh timestamps, and the
-stream resumed on reconnect with no reset, short by exactly the outage divided
-by the cycle time (13\,088 samples against a 13\,663 baseline, zero drops).
+as such. Pulling SDA during a run, measured on the build immediately preceding
+the current structure and recorded in \texttt{TESTING.md} section 10 (that
+capture file is not among the committed ones), produced one \texttt{E 5}
+(\texttt{EIO}) record 9\,995~$\mu$s after the last sample; samples stopped rather
+than repeating with fresh timestamps, and the stream resumed on reconnect with no
+reset, short by the outage divided by the cycle time (13\,088 samples against a
+13\,663 baseline, zero drops).
 Bus recovery was verified both ways on 1.5.0: forced on a healthy bus
 (\texttt{20260830-131247}) it leaves the timing unchanged, and on a genuinely
 wedged bus (\texttt{20260830-131424}, \texttt{-131457}) it recovers on the next
-boot --- a failure that on 1.4.0 killed three consecutive boots
+boot. The same failure on 1.4.0 killed three consecutive boots
 (\texttt{20260830-131609} to \texttt{-131611}, zero samples) and required
 reflashing to clear.
 
@@ -617,45 +638,43 @@ reflashing to clear.
 collective points below are true of the project and can stay; what is missing is
 which of them each of you would put first, and what you expect to do with it.}
 
-The three things the project actually taught us:
+What the project taught us:
 
 \begin{itemize}
 \item \textbf{How a real-time kernel's device model fits together.} What it
-  means for an IMFS node to \emph{own} a device, why the teardown order is the
-  whole safety argument, how an ioctl ABI is designed so it can be frozen, and
-  how a bus driver and a device driver meet through a framework interface rather
+  means for an IMFS node to \emph{own} a device, why the teardown order carries
+  the safety argument, how an ioctl ABI is designed so it can be frozen, and how
+  a bus driver and a device driver meet through a framework interface rather
   than through each other.
 \item \textbf{That bringing up a peripheral means registers and nothing else.}
-  Clock gating, alternate-function mux, CCR clock math --- and that an I2C bus
-  has a failure mode, a slave holding SDA low, that no amount of retrying fixes
-  and that has to be designed for explicitly.
+  Clock gating, alternate-function mux, CCR clock math; and that an I2C bus has
+  a failure mode, a slave holding SDA low, that no amount of retrying fixes and
+  that has to be designed for explicitly.
 \item \textbf{That lock-free is a scheduling decision before it is a performance
   one.} The published snapshot is a seqlock because an RTEMS mutex held by a
   low-priority reader would block the acquisition task until the
-  priority-inheritance handoff completed. The same reasoning fixes the task
-  priorities, and getting it wrong cost us a measured 2.70~s console blackout.
+  priority-inheritance handoff completed. The same reasoning sets the task
+  priorities, and getting it wrong cost a measured 2.70~s console blackout.
 \end{itemize}
 
-We also learned that \emph{on an embedded target the measurement is the test}.
 We had no debugger on the running system, and print statements change the timing
 they are supposed to observe, so the only way to know whether a change helped was
 to emit raw records, capture them on the host and compute the statistics there.
 Several of our defects were invisible in any single reading and obvious only in
-the noise-versus-oversampling curve. A related lesson is that a datasheet is a
-timing contract rather than a feature list: the conversion-time table is the
-specification the driver has to honour, and one tick of rounding against it was a
-real bug.
+the noise-versus-oversampling curve. The datasheet turned out to be a timing
+contract as much as a feature list: the conversion-time table is a specification
+the driver has to honour, and one tick of rounding against it was a real bug.
 
 \paragraph{Questions that remained unanswered.} Self-heating at this duty cycle
 is \emph{not} characterised: measured thermal drift varied by two orders of
 magnitude between otherwise identical runs, and a much longer run is needed
-before treating it as settled. One acceptance criterion --- that RMS noise fall
-monotonically at the OSS1 to OSS2 step --- held in only one of five runs, and we
-believe the sweep design is at fault rather than the driver: the modes are
-visited once each in sequence, so slow atmospheric drift lands on them
-unequally, and the datasheet difference between those two modes is 1~Pa against
-run-to-run scatter of about $\pm 1$~Pa. Interleaving the modes within a sweep is
-the change we would make before trusting that criterion.
+before treating it as settled. One acceptance criterion, that RMS noise fall
+monotonically at the OSS1 to OSS2 step, held in only one of five runs, and the
+sweep design looks more likely at fault than the driver: the modes are visited
+once each in sequence, so slow atmospheric drift lands on them unequally, and
+the datasheet difference between those two modes is 1~Pa against run-to-run
+scatter of about $\pm 1$~Pa. Interleaving the modes within a sweep is the change
+we would make before trusting that criterion.
 
 \paragraph{Tools we learned to use.} The RTEMS Source Builder and \texttt{waf}
 for building a cross toolchain and a BSP; the \texttt{arm-rtems7} compiler,
@@ -676,16 +695,16 @@ took, and keep the one-line reason for each.}
 
 \begin{itemize}
 \item \textbf{The BSP ships no I2C bus driver for the framework the device
-  driver targets.} We discovered this only after the sensor driver was written:
-  there was nothing for \texttt{i2c\_dev\_alloc\_and\_init()} to attach to. This
-  roughly doubled the scope of the project --- the 622-line polled STM32F4
-  master in \texttt{i2c/} exists entirely because of it.
+  driver targets.} We found this only after the sensor driver was written: there
+  was nothing for \texttt{i2c\_dev\_alloc\_and\_init()} to attach to. It roughly
+  doubled the scope of the project; the 622-line polled STM32F4 master in
+  \texttt{i2c/} exists because of it.
 
 \item \textbf{Every \texttt{open()} returned \texttt{ENFILE}.} The RTEMS default
   for \texttt{CONFIGURE\_MAXIMUM\_FILE\_DESCRIPTORS} is 3, and
   \texttt{stdin}, \texttt{stdout} and \texttt{stderr} consume all three, so
-  opening the bus node and the device node was impossible. The symptom (``too many open
-  files'' on a system with two files) looked nothing like the cause.
+  opening the bus node and the device node was impossible. The symptom (``too
+  many open files'' on a system with two files) looked nothing like the cause.
 
 \item \textbf{The console was silent for hours.} Two independent causes stacked:
   the stock BSP puts the console on USART3 while we had wired USART2, and on
@@ -693,8 +712,8 @@ took, and keep the one-line reason for each.}
   \texttt{/dev/tty.*}. A related trap cost another afternoon: termios settings
   applied with \texttt{stty -f} to a \texttt{cu.*} node are reset when the port
   is opened, so \texttt{cat} read at the driver's default baud and recorded
-  framing garbage --- which is why the capture tool applies them to an
-  already-open descriptor and holds it for the whole run.
+  framing garbage. The capture tool therefore applies them to an already-open
+  descriptor and holds it for the whole run.
 
 \item \textbf{A BSP header uses \texttt{or} as an identifier.} It compiles as C
   and cannot compile as C++, where \texttt{or} is an alternative spelling of
@@ -704,36 +723,34 @@ took, and keep the one-line reason for each.}
   \texttt{rtems\_task\_wake\_after(n)} blocks for between $n-1$ and $n$ ticks,
   because the call lands somewhere inside the current tick. Our conversion
   timeouts used the datasheet maxima unpadded, so the driver occasionally read
-  the result registers while the sensor was still converting --- and, crucially,
-  while still within specification. The defect was stochastic and invisible in
-  any single reading; what exposed it was that RMS noise did not fall
-  monotonically with oversampling, which it must. The fix is one tick of padding
-  on every conversion constant, and the header now says explicitly not to
-  ``correct'' them back.
+  the result registers while the sensor was still converting, and still within
+  specification. The defect was stochastic and invisible in any single reading;
+  what exposed it was that RMS noise did not fall monotonically with
+  oversampling, which it must. The fix is one tick of padding on every
+  conversion constant, and the header says not to ``correct'' them back.
 
 \item \textbf{The board came up dead after a reset, and stayed dead.} A CPU
   reset landing mid-transfer leaves the sensor holding SDA low; the peripheral
   latches BUSY and every transfer fails, across every subsequent reset. Only a
-  power cycle cleared it. This reproduces in roughly two boots out of seven once
-  bus occupancy is high. The fix is the recovery sequence described in Section
+  power cycle cleared it. It reproduces in roughly two boots out of seven once
+  bus occupancy is high, and the fix is the recovery sequence of Section
   \ref{sec:design}.
 
 \item \textbf{A failing sampler starved the task that was supposed to report the
   failure.} On a successful cycle the sampler sleeps inside the conversion wait
   and yields; on a failing one the ioctl returns immediately, so a disconnected
   sensor turned it into a busy-loop at priority 2. Pulling SDA during a capture
-  produced 2.70~s of complete console silence --- no samples, no errors, no
-  drops --- because nothing below it could run. A fault that silences the
-  reporting path is worse than the fault itself. The sampler now yields a tick
-  after a failed cycle, and that yield is also the slot the consumer uses to
-  notice and report the errno.
+  produced 2.70~s of complete console silence, no samples, no errors and no
+  drops, because nothing below it could run. The sampler now yields a tick after
+  a failed cycle, which is also the slot the consumer uses to notice and report
+  the errno.
 
 \item \textbf{A stale reading that looked fresh.} An early version stamped the
   last good measurement with the current timestamp when a cycle failed, so a
-  dead sensor produced a plausible, perfectly-paced stream of a constant value.
-  Nothing in the data said anything was wrong. The layer now refuses to
+  dead sensor produced a plausible, perfectly-paced stream of a constant value,
+  with nothing in the data to say anything was wrong. The layer now refuses to
   republish on a failed cycle, so the timestamp freezes and the age of the data
-  stays honest --- and the header says so, because the check cannot be forced on
+  stays visible. The header documents it, since the check cannot be forced on
   the consumer.
 
 \item \textbf{Aliasing between the temperature cache and the noise
@@ -741,16 +758,16 @@ took, and keep the one-line reason for each.}
   compensating a second of pressure readings against one cached temperature
   leaves the stream as a staircase: flat inside an interval, stepping when the
   cache refreshes. Whole-block RMS then measures thermal drift times the cache
-  interval rather than sensor noise --- 16.21~Pa against 4.85~Pa within-segment
-  in one measured block. The analysis now splits each block at the cache
-  refreshes and reports the median within-segment RMS.
+  interval rather than sensor noise: 16.21~Pa against 4.85~Pa within-segment in
+  one measured block. The analysis now splits each block at the cache refreshes
+  and reports the median within-segment RMS.
 
 \item \textbf{A use-after-free in teardown.} Freeing the device directly leaves
   a published IMFS node pointing at freed memory. The correct order is
-  \texttt{unlink()}, which runs the node's destroy handler. Because nothing in a
-  normal run ever tears the device down, the whole path was dead code --- which
-  is exactly where the bug lived --- so it is now exercised under a build flag
-  that registers, opens, unlinks and re-opens once at boot.
+  \texttt{unlink()}, which runs the node's destroy handler. Nothing in a normal
+  run ever tears the device down, so the whole path was dead code, which is
+  where the bug lived; it is now exercised under a build flag that registers,
+  opens, unlinks and re-opens once at boot.
 \end{itemize}
 
 \section{Honor Pledge}
