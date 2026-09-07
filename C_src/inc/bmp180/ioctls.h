@@ -2,14 +2,14 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
-#ifndef ES2025_BMP180_H
-#define ES2025_BMP180_H
+#ifndef ES2025_BMP180_IOCTLS_H
+#define ES2025_BMP180_IOCTLS_H
 
 #include <dev/i2c/i2c.h>
 #include <sys/_stdint.h>
 
 #define BMP180_I2C_ADDR         0x77u
-/* The expected chip-id value lives in bmp_regs.h as BMP180_CHIP_ID_EXPECTED,
+/* The expected chip-id value lives in bmp180/regs.h as BMP180_CHIP_ID_EXPECTED,
  * with the register address it is read from. This header defines the public
  * ioctl ABI and has no business carrying a second name for it. */
 
@@ -83,4 +83,4 @@
  */
 #define BMP180_IOCTL_GET_TEMP_INTERVAL  _IOR('B', 0x06, uint32_t)
 
-#endif //ES2025_BMP180_H
+#endif //ES2025_BMP180_IOCTLS_H

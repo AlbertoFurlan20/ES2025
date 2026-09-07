@@ -5,12 +5,37 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # 2. Define exactly where the compiler is located BEFORE project()
-# Each developer sets RTEMS_PREFIX once in local.cmake (gitignored).
-# First time: copy local.cmake.example -> local.cmake and edit the path.
-include(${CMAKE_SOURCE_DIR}/local.cmake OPTIONAL)
+# The toolchain path is written in exactly one file, .env/setup.env, which
+# C_src/compile.sh, C_src/flash.sh and C_src/Makefile read too. First time: copy
+# .env/setup.env.example to .env/setup.env and edit the path.
+#
+# Precedence: -DRTEMS_LOCAL_PATH on the command line, then the environment, then
+# the file. Read with file(STRINGS) rather than include() so the same plain
+# KEY=VALUE text serves CMake and the shell without either owning the format.
+set(ES_ENV_FILE ${CMAKE_SOURCE_DIR}/.env/setup.env)
+
 if(NOT DEFINED RTEMS_LOCAL_PATH)
-  message(FATAL_ERROR "Missing RTEMS_LOCAL_PATH. Copy local.cmake.example to local.cmake and set your toolchain path.")
+  if(DEFINED ENV{RTEMS_LOCAL_PATH})
+    set(RTEMS_LOCAL_PATH $ENV{RTEMS_LOCAL_PATH})
+  elseif(EXISTS ${ES_ENV_FILE})
+    # A later assignment wins, so an appended line overrides an earlier one the
+    # way it would in a shell.
+    file(STRINGS ${ES_ENV_FILE} ES_ENV_LINES REGEX "^[ \t]*RTEMS_LOCAL_PATH[ \t]*=")
+    if(ES_ENV_LINES)
+      list(POP_BACK ES_ENV_LINES ES_ENV_LINE)
+      string(REGEX REPLACE "^[ \t]*RTEMS_LOCAL_PATH[ \t]*=[ \t]*" "" RTEMS_LOCAL_PATH "${ES_ENV_LINE}")
+      string(REGEX REPLACE "[\"\r]" "" RTEMS_LOCAL_PATH "${RTEMS_LOCAL_PATH}")
+      string(STRIP "${RTEMS_LOCAL_PATH}" RTEMS_LOCAL_PATH)
+    endif()
+  endif()
 endif()
+
+if(NOT RTEMS_LOCAL_PATH)
+  message(FATAL_ERROR
+      "Missing RTEMS_LOCAL_PATH. Copy .env/setup.env.example to .env/setup.env "
+      "and set your toolchain path.")
+endif()
+
 set(RTEMS_PREFIX       ${RTEMS_LOCAL_PATH}/RTEMS_toolchain/rtems)
 set(CMAKE_C_COMPILER   ${RTEMS_PREFIX}/bin/arm-rtems7-gcc)
 set(CMAKE_CXX_COMPILER ${RTEMS_PREFIX}/bin/arm-rtems7-g++)

@@ -53,6 +53,7 @@ rsb-log-*.txt
 
 # [JetBrains]
 **/.idea
+*.mcp.json
 
 # [Binaries]
 *.bin
@@ -61,15 +62,26 @@ rsb-log-*.txt
 rtems_hello
 
 # [Local machine config]
-local.cmake
 **/*.env
 
 # [Host unit-test binaries — sources keep their .cpp extension]
+# One folder per module under C_src/tests/, mirroring src/ and inc/.
 C_src/tests/*/test_*
-!C_src/tests/test_*.cpp
+!C_src/tests/*/test_*.cpp
 *.dSYM/
 
 # [Python analysis tooling]
 **/.venv
 __pycache__/
 .pytest_cache/
+
+# [IGNORED]
+*.ignored.*
+*.IGNORED.*
+
+# [Latek-created files]
+*.toc
+*.aux
+*.log
+*.fls
+*.fdb_latexmk

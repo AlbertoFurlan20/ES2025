@@ -2,8 +2,8 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
-#ifndef ES2025_BMP_REGS_H
-#define ES2025_BMP_REGS_H
+#ifndef ES2025_BMP180_REGS_H
+#define ES2025_BMP180_REGS_H
 
 // region register addresses                                                  */
 
@@ -67,4 +67,4 @@
 #define BMP180_CONV_TIME_PRESS_OSS2_MS  15u
 #define BMP180_CONV_TIME_PRESS_OSS3_MS  27u
 
-#endif //ES2025_BMP_REGS_H
+#endif //ES2025_BMP180_REGS_H

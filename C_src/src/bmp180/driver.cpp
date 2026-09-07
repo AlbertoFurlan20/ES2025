@@ -11,11 +11,11 @@
 #include <fcntl.h>
 #endif
 
-#include "bmp.h"
-#include "bmp180_ioctls.h"
-#include "bmp_regs.h"
+#include "bmp180/driver.h"
+#include "bmp180/ioctls.h"
+#include "bmp180/regs.h"
 
-// Internals. Declared here rather than in bmp.h: `static` gives them internal
+// Internals. Declared here rather than in bmp180/driver.h: `static` gives them internal
 // linkage, so a declaration in a shared header hands every *other* includer a
 // symbol it can never link against — which is exactly what -Wunused-function
 // was reporting, once per includer.

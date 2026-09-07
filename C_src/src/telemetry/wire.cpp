@@ -1,26 +1,18 @@
 //
-// See telemetry.h for the rationale behind the producer/consumer split.
+// See telemetry/wire.h for why nothing here is queued.
 //
 
 #include <unistd.h>
 
 #include <rtems.h>
 
-#include "telemetry.h"
-#include "telem_fmt.h"
-#include "telem_ring.h"
+#include "telemetry/wire.h"
+#include "telemetry/fmt.h"
 
 namespace
 {
-    // 128 slots x 24 bytes = ~3 KB. At the v1.0.0 ceiling of ~111 Hz (OSS0) the
-    // emitter drains roughly 500 lines/s, so the ring holds over a second of
-    // slack - far more than any plausible console stall.
-    constexpr uint32_t TELEM_RING_SLOTS = 128;
-
     // "S <20> <11> <11> <1>\n" plus slack.
     constexpr size_t TELEM_LINE_MAX = 64;
-
-    TelemRing<TELEM_RING_SLOTS> g_ring;
 
     /** @brief Write a fully assembled line to stdout. */
     void emit_line(const char* buf, const size_t len)
@@ -28,7 +20,12 @@ namespace
         (void)write(STDOUT_FILENO, buf, len);
     }
 
-    /** @brief Format and emit one record. */
+    /**
+     * @brief Format and write one record.
+     *
+     * @details Every record kind goes through here, so the wire format lives in
+     *          exactly one switch.
+     */
     void emit_record(const telem_rec_t& rec)
     {
         char buf[TELEM_LINE_MAX];
@@ -92,7 +89,7 @@ void telem_emit_header(const char* fw, const uint32_t temp_ms)
     emit_line(buf, n);
 }
 
-bool telem_push_sample(const uint64_t t_us, const int32_t t_cdeg,
+void telem_emit_sample(const uint64_t t_us, const int32_t t_cdeg,
                        const int32_t p_pa, const uint8_t oss)
 {
     telem_rec_t rec{};
@@ -102,42 +99,25 @@ bool telem_push_sample(const uint64_t t_us, const int32_t t_cdeg,
     rec.oss = oss;
     rec.kind = TELEM_SAMPLE;
 
-    return g_ring.push(rec);
+    emit_record(rec);
 }
 
-bool telem_push_error(const uint64_t t_us, const int32_t err)
+void telem_emit_error(const uint64_t t_us, const int32_t err)
 {
     telem_rec_t rec{};
     rec.t_us = t_us;
     rec.aux = err;
     rec.kind = TELEM_ERROR;
 
-    return g_ring.push(rec);
+    emit_record(rec);
 }
 
-rtems_task telem_emitter_task(const rtems_task_argument ignored)
+void telem_emit_drop(const uint64_t t_us, const int32_t lost)
 {
-    (void)ignored;
+    telem_rec_t rec{};
+    rec.t_us = t_us;
+    rec.aux = lost;
+    rec.kind = TELEM_DROP;
 
-    while (true)
-    {
-        if (telem_rec_t rec{}; g_ring.pop(rec))
-        {
-            emit_record(rec);
-            continue;
-        }
-
-        // Ring drained. Report any drops that accumulated while it was full,
-        // then yield for a tick so the acquisition task runs.
-        if (const uint32_t lost = g_ring.take_dropped(); lost != 0)
-        {
-            telem_rec_t drop{};
-            drop.t_us = telem_now_us();
-            drop.aux = static_cast<int32_t>(lost);
-            drop.kind = TELEM_DROP;
-            emit_record(drop);
-        }
-
-        rtems_task_wake_after(1);
-    }
+    emit_record(rec);
 }

@@ -2,8 +2,8 @@
 // Created by Alberto Furlan on 01/04/26.
 //
 
-#ifndef ES2025_BMP_CONFIGS_H
-#define ES2025_BMP_CONFIGS_H
+#ifndef ES2025_BMP180_TYPES_H
+#define ES2025_BMP180_TYPES_H
 
 #include <dev/i2c/i2c.h>
 
@@ -77,4 +77,4 @@ typedef struct {
     bool            ut_valid;          ///< False until the first read.
 } bmp180_dev_t;
 
-#endif //ES2025_BMP_CONFIGS_H
+#endif //ES2025_BMP180_TYPES_H

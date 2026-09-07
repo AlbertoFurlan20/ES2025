@@ -18,7 +18,7 @@
 #include <bsp/rcc.h>       // stm32f4_rcc_set_clock + STM32F4_RCC_I2C1
 
 #include "constants.h"    // ES_DEBUG_TITLE / ES_ERROR
-#include "i2c.h"          // own header, so declarations are checked here
+#include "i2c/i2c.h"          // own header, so declarations are checked here
 
 // Peripheral base addresses are written out below rather than taken from
 // <bsp/stm32f4.h>: that umbrella header transitively pulls stm32f4xxxx_tim.h,

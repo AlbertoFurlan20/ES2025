@@ -1,15 +1,14 @@
-# Toolchain location comes from one place only: ../local.cmake, which is
-# gitignored and machine-local (copy local.cmake.example to create it). The
-# root CMakeLists.txt reads the same file, so CMake, make and compile.sh can
-# no longer drift apart. Override on the command line if you must:
+# Toolchain location comes from one place only: ../.env/setup.env, a plain
+# KEY=VALUE file that is gitignored and machine-local (copy
+# .env/setup.env.example to create it). The root CMakeLists.txt, compile.sh and
+# flash.sh read the same file, so the four build paths cannot drift apart.
+# Override on the command line if you must:
 #     make RTEMS_LOCAL_PATH=/somewhere/else
-LOCAL_CMAKE      := $(abspath ../local.cmake)
-# NB: the awk program must keep its parentheses balanced and opener-first, or
-# make's $(shell ...) terminates early on the first unmatched ')'.
-RTEMS_LOCAL_PATH ?= $(shell awk '/RTEMS_LOCAL_PATH/{gsub(/[()]/,"",$$2); print $$2}' $(LOCAL_CMAKE) 2>/dev/null)
+ENV_FILE         := $(abspath ../.env/setup.env)
+RTEMS_LOCAL_PATH ?= $(shell sed -n 's/^[[:space:]]*RTEMS_LOCAL_PATH[[:space:]]*=[[:space:]]*//p' $(ENV_FILE) 2>/dev/null | tr -d '"\r' | tail -1)
 
 ifeq ($(strip $(RTEMS_LOCAL_PATH)),)
-$(error Missing RTEMS_LOCAL_PATH. Copy local.cmake.example to local.cmake and set your toolchain path)
+$(error Missing RTEMS_LOCAL_PATH. Copy .env/setup.env.example to .env/setup.env and set your toolchain path)
 endif
 
 RTEMS_ROOT   = $(RTEMS_LOCAL_PATH)/RTEMS_toolchain/rtems
@@ -32,8 +31,10 @@ CXXFLAGS = \
     -qrtems \
     -Iinc
 
-SRCS   = src/*.cpp
-INCLUDES = inc/*.h
+# One folder per module under src/ and inc/, so both patterns are needed:
+# init.cpp sits at the top, everything else one level down.
+SRCS     = $(wildcard src/*.cpp src/*/*.cpp)
+INCLUDES = $(wildcard inc/*.h inc/*/*.h)
 $(warning "Single compile, so do not `include` lib files, use fwd declarations instead")
 
 TARGET = sensor.exe

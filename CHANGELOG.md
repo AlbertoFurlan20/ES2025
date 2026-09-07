@@ -6,6 +6,269 @@ tracked here — see the git history for those.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-09-02
+
+One way to the sensor, and an operator link back in. The driver, the bus and the
+acquisition timing are untouched; what changed is who is allowed to talk to them.
+
+### Added
+
+- **A control task on the console (`telemetry/control.cpp`).** The USART2 that
+  carries telemetry out now carries commands in, on PA3.
+  `bmp180_control_task` owns the read side and is the only task that reads
+  stdin. One command per line, anything else discarded:
+
+  | Line | Effect |
+  |------|--------|
+  | `O0`..`O3` | request that oversampling mode |
+  | `R` | request a soft reset; device returns to power-on defaults |
+
+  It is a consumer like the telemetry task: a command becomes a
+  `bmp_app_set_oss` or a `bmp_app_request_soft_reset`, applied by the sampler at
+  the top of its next cycle, so `oss` still has exactly one writer and no
+  consumer holds a descriptor.
+
+  The task never writes to the console. The wire format is frozen, so an echo or
+  an error message would appear in every capture as a line the parser has to
+  skip; for the same reason the console is put into canonical mode with echo off
+  at startup, since the default termios echoes what it receives. Confirmation
+  comes from the `oss` field of the following samples, which reports the mode
+  they were taken at rather than the mode that was asked for.
+
+  The first accepted command calls `telem_cancel_sweep`. The boot sweep steers
+  `oss` itself and keys each block on getting the mode it asked for, a condition
+  that can never match once an operator sets the mode, so the profile stops
+  rather than stalling the stream. **A capture used for validation is one where
+  no command was typed.**
+
+### Changed
+
+- **The application layer is now the only way to the sensor, and the default
+  build.** `bmp_app_sampler_task` owns `/dev/bmp180-0`; nothing else opens it.
+  What used to be `bmp180_telemetry_task` in `sensor.cpp` — a task that held its
+  own fd, issued its own ioctls and pushed its own records — is now
+  `src/telemetry/task.cpp`, a consumer with no descriptor at all. It drives the
+  OSS sweep through `bmp_app_set_oss`, reads through `bmp_app_read`, and is the
+  only producer of `S` records.
+
+  The sweep profile is unchanged — 3 warm-up samples discarded, 500 recorded per
+  mode, then a continuous run at `OSS=HIGH_RESOLUTION` — so captures stay
+  comparable against the v1.5.0 gate. It keys each block on the sample's own
+  `oss` field rather than assuming a mode change landed immediately, which the
+  old task could assume because it issued the ioctl itself.
+
+- **The sampler publishes, then sends an event; it no longer knows what
+  telemetry is.** `bmp_app_subscribe` registers one task to be woken with
+  `BMP_APP_EVENT_SAMPLE` after each publish. Polling would have been simpler and
+  wrong: the snapshot is one deep, so a consumer that misses a publish loses
+  that sample for good, and `metrics.py` derives the sample rate and the jitter
+  from differences between consecutive `S` records — every miss reads as a
+  doubled interval, in the numbers the report is built on.
+
+  The event does not make loss impossible, it makes it rare and visible. An
+  event is a bit, not a count, so two publishes landing before the consumer runs
+  coalesce. The consumer watches `seq` and emits a `D` record for the hole, so
+  the analysis can tell a real interval from one spanning a gap. That is now the
+  only meaning of `D`.
+
+- **The emitter task and the telemetry ring are gone.** The image went from
+  three tasks to two on this change, and back to three when the control task was
+  added above. `telem_emitter_task` and `TelemRing` existed so that a stalled
+  UART could never delay acquisition. Acquisition no longer goes anywhere near the console — the
+  sampler publishes into a snapshot and nothing else — so the queue sat between
+  a producer and a consumer that had become the same task.
+  `bmp180_telemetry_task` formats each record and writes it to USART2 itself,
+  `telem_push_*` become `telem_emit_*` and write synchronously, and `init.cpp`
+  writes its registration error the same way the session header was already
+  written.
+
+  | Task | Prio | Role |
+  |------|------|------|
+  | `SAMP` | 2 | owns the fd, acquires, publishes, sends the sample event |
+  | `TELE` | 3 | reads the surface, drives the sweep, writes USART2 |
+  | `CTRL` | 4 | blocks in `read()` on the console, applies commands |
+
+  `CTRL` sits below both for the same reason `TELE` sits below `SAMP`: it is
+  blocked in `read()` almost always, and an arriving command must not preempt a
+  publish that `TELE` is reading.
+
+  What this costs: the blocking `write()` now happens in the task that also has
+  to be running to observe publishes, so console backpressure can lose samples
+  where before it only delayed them. At OSS0 that is ~200 lines/s of about 40
+  bytes against 11 520 B/s at 115200 baud — roughly 30% headroom — and any loss
+  arrives as a `D` record rather than as a longer cycle time.
+
+- **Error reporting moved from the sampler to the telemetry task.** The sampler
+  records an errno in `bmp_app_last_error()` and stops there, which drops
+  `telemetry/wire.h` from the app layer entirely. The consumer polls that value
+  on the edge, both when an event arrives and when its wait times out.
+
+  The timeout is what makes the no-publish cases reportable: a sampler that
+  failed its `open()` deletes itself and sends nothing, and a sampler mid-outage
+  publishes nothing, yet both leave an errno that reaches the stream within
+  `ERROR_POLL_MS`. This reverses the reasoning recorded under Fixed below, which
+  was sound while the sampler was the only task certain to be running during a
+  fault, and stopped being true once the consumer sat directly below it in
+  priority and ran in the yield that fix introduced.
+
+- **One folder per module, mirrored across `src/`, `inc/` and `tests/`.**
+  `bmp180/` is the driver, `i2c/` the polled STM32F4 master below it, `bmp_app/`
+  the sampler task and its surface, `telemetry/` the telemetry task and the wire
+  format. `init.cpp` and `constants.h` stay at the top because they belong to
+  the image rather than to any module.
+
+  Only `inc/` is on the include path, never `inc/<module>/`, so an include names
+  the module it reaches into: `#include "bmp_app/app.h"`. Filenames inside a
+  module lost the prefix the flat tree needed — `bmp.h` → `bmp180/driver.h`,
+  `bmp_driver_app.*` → `bmp_app/app.*`, `bmp_app_snapshot.h` →
+  `bmp_app/snapshot.h`, `telemetry.*` → `telemetry/wire.*`, `bmp_telemetry.*` →
+  `telemetry/task.*`, `telem_fmt.h` → `telemetry/fmt.h`. Header guards follow.
+  No behaviour changed: `.text` is identical across the move.
+
+- `bmp_app_read` documents that a successful return does not mean a fresh
+  reading. A failed cycle does not publish, so a dead sensor leaves the last
+  good sample in place and the call keeps succeeding, plausibly, forever. The
+  staleness is detectable through `seq` or `t_us` and the reason through
+  `bmp_app_last_error()`, but nothing forces a caller to look, and the header
+  and README now say so.
+
+### Removed
+
+- `telem_emitter_task`, `TelemRing`, `inc/telem_ring.h` and its host test. See
+  the merge above for why a queue between one task and itself buys nothing.
+- `-DBMP_APP_TEST`. It selected a demo consumer in place of the acquisition
+  task; with the application layer as the only path there is no second build for
+  it to choose. The demo reader it named had already been deleted.
+- `src/sensor.cpp`. Its sweep profile lives on in `src/telemetry/task.cpp`,
+  driven through the control surface instead of through its own fd.
+
+### Fixed
+
+- **A failing sampler starved every task below it.** On a successful cycle the
+  sampler sleeps inside the conversion wait and yields the CPU; on a failing one
+  the ioctl returns immediately and the loop retried at once, so a disconnected
+  sensor turned the task into a busy-loop at priority 2. Measured by pulling SDA
+  during a capture (`20260831-160509`): **2.70 s of complete console silence** —
+  no samples, no errors, no drops — because nothing below it could run to report
+  the fault. The premise of the layer is that a consumer can never delay
+  acquisition; the inverse held far too well.
+
+  The sampler now yields a tick after a failed cycle. That yield is also what
+  lets the telemetry task report the fault: it sits one priority below the
+  sampler, so it is the next task to run, and it emits on the edge — a
+  disconnected sensor produces one record rather than hundreds a second.
+
+  Re-measured (`20260831-160918`): the `E 5` lands 9 995 µs after the last good
+  sample — one cycle — one record for a 6.34 s outage, the console stays alive
+  throughout, and the stream resumes on reconnect with no reset. Taken under the
+  `-DBMP_APP_TEST` build that preceded this change, with the same sampler and a
+  different consumer, so it is the bar to re-hit rather than a result from this
+  tree.
+
+### Verified
+
+Three consecutive 150 s captures on 2026-09-02 — `20260902-165752`,
+`-170059`, `-170351`, about 13 640 samples each. Taken with `CTRL` created at
+priority 2 rather than 4; no command was typed during any of them, so the task
+stayed blocked in `read()` and never became runnable. The priority was corrected
+afterwards and the runtime ordering has not been re-measured on hardware.
+
+- `median_interval_us` is `5000 / 7000 / 10999 / 18999` in all three, identical
+  to the 1.5.0 gate. The restructuring cost the acquisition path nothing.
+- 0 `E`, 0 `D`, 0 malformed in all three. The event-plus-`seq` mechanism keeps
+  up with the sampler at every mode, which is what the removal of the emitter
+  task and the ring was betting on.
+- `mean_pa` constant across the four sweep modes to within 4 Pa.
+- `segment_rms_pa` falls monotonically across `oss` 0→2 in all three runs. The
+  `oss=2`→`oss=3` step holds in one run of three, and `oss=0` reads above its
+  datasheet figure in two of three. Neither is new and neither is attributable
+  to this release. Fitting and removing a linear pressure trend per block shows
+  why they differ: at `oss=3` detrending changes nothing (3.22/4.32/3.57 Pa
+  become 3.92/4.14/3.99), so within-block drift is not the mechanism there and
+  the top step simply is not resolvable against 1 Pa of datasheet separation —
+  interleaving the modes within a sweep is still the change worth making. At
+  `oss=0` detrending does explain it: that block's fitted slope is −6.0 and
+  −7.7 Pa/s in the two high runs, an order of magnitude steeper than any other
+  block, and detrended it reads 6.19 and 5.90 Pa against a datasheet 6.0. It is
+  a post-boot settling transient, and an argument for more than 3 warm-up
+  samples.
+
+## [1.6.0] - 2026-08-31
+
+More than one task can use the sensor now. Everything measured stays where it
+was: the driver, the bus and the acquisition timing are untouched.
+
+### Added
+
+- **An application layer over the driver (`bmp_app`).** The driver publishes a
+  `/dev` node and nothing else, so every consumer had to open it, block for a
+  full conversion — 5 ms at OSS0, 19 ms at OSS3 — and add its own traffic to the
+  bus. Worse, changing the oversampling mode meant holding an fd, so two
+  consumers would write `oss` against each other with nothing above the driver
+  to arbitrate. That is workable for exactly one reader, which is what the tree
+  had.
+
+  One sampler task now owns `/dev/bmp180-0`. It applies any pending control
+  change, takes a measurement, and publishes it into a snapshot. Consumers read
+  that snapshot without blocking and without touching the bus, and set the mode
+  or the temperature interval through calls the sampler applies at the top of
+  its next cycle. Consumers never hold an fd, which is what gives `oss` a single
+  writer.
+
+  ```c
+  bmp_app_sample_t s;
+  if (bmp_app_read(&s)) { /* s.pressure_pa, s.t_us, s.oss, s.seq */ }
+
+  bmp_app_set_oss(BMP180_OSS_ULTRA_HIGH_RES);   /* applied next cycle */
+  ```
+
+  The snapshot is a seqlock rather than a mutex: a reader must never be able to
+  delay acquisition, and an RTEMS mutex held by a low-priority reader would
+  block the sampler until the priority-inheritance handoff completed. Its
+  counter is `uint32_t` and its payload is plain, because `std::atomic<uint64_t>`
+  is not lock-free on ARMv7-M and would put a libatomic lock inside the one
+  structure that exists to avoid one. Reads have a bounded retry budget, so a
+  reader running at higher priority than the sampler cannot spin forever waiting
+  for a writer it has preempted.
+
+  A failed cycle does not publish. The snapshot keeps its previous values *and
+  its previous timestamp*, so a consumer comparing `t_us` against the current
+  uptime sees the true age of the data rather than a fresh timestamp on a stale
+  reading — the same principle as B1.
+
+- `-DBMP_APP_TEST` builds the sampler plus a demo consumer in place of
+  `bmp180_telemetry_task`. It replaces the sweep rather than running beside it,
+  because two owners of the device node would be two writers of `oss`, which is
+  the race the layer removes.
+
+### Verified
+
+Nothing new runs in a default build, and the layer costs the shipped firmware
+nothing. `20260831-120132`, default build, 150 s: 13 695 samples,
+`median_interval_us` of `5000 / 7000 / 10999 / 18999`, zero errors, drops and
+malformed lines — the v1.5.0 gate figures unchanged. `arm-rtems7-nm` on that
+image finds no reference to the layer's tasks.
+
+`20260831-120755`, built with `-DBMP_APP_TEST`, 150 s: **13 695 samples, the
+same count**, the same four intervals, and 0/0/0. The demo consumer drove all
+four modes through `bmp_app_set_oss` and read every sample through
+`bmp_app_read`, at 500 samples per mode before the continuous run. So the whole
+profile went through the layer at no measurable cost to acquisition.
+
+The first attempt did not: 8797 samples, because the demo reader ended its sweep
+at OSS3 and stayed there, running the 129 s free-run block at 19 ms per cycle
+instead of 11 ms. It was the reader that was wrong, not the layer — it is fixed
+to settle where `bmp180_telemetry_task` settles.
+
+Host suite `test_bmp_app_snapshot` covers the seqlock against a concurrent
+writer, 30 consecutive runs clean.
+
+### Notes
+
+- `bmp180_telemetry_task` still owns the device in a default build. Moving it
+  onto the read surface, and making the sampler the only owner, is a separate
+  change.
+
 ## [1.5.0] - 2026-08-30
 
 Remediation round R4 complete, and with it the plan that started at 1.1.0. A
@@ -563,6 +826,7 @@ Reference: BST-BMP180-DS000-09 Rev 2.5 (April 2013), ST RM0090.
   and leaves the barometric conversion to the caller.
 - `bmp180_task_manual` is a debug path and is not wired into the boot sequence.
 
+[1.6.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.6.0
 [1.5.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.5.0
 [1.4.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.4.0
 [1.3.0]: https://github.com/AlbertoFurlan20/ES2025/releases/tag/v1.3.0
