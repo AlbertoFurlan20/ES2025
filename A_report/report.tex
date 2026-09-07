@@ -662,36 +662,7 @@ be designed around.
   low-priority reader would block the acquisition task until the
   priority-inheritance handoff completed. The same reasoning sets the task
   priorities, and getting it wrong cost a measured 2.70~s console blackout.
-\item \textbf{That without a debugger, statistics are the instrument.} Print
-  statements perturb the timing they are supposed to observe, so the only way to
-  know whether a change helped was to emit raw records, capture them on the host
-  and compute the numbers there. Several defects were invisible in any single
-  reading and obvious only in the noise-versus-oversampling curve --- the
-  one-tick conversion-timeout bug among them.
 \end{itemize}
-
-Asked which of these we would put first, we answer differently.
-\textbf{A.~Furlan} takes the measurement discipline: that a firmware change is
-not done until a capture says what it did, and that a version number has to mean
-something about the measurement path. It is the habit most directly reusable
-outside this project, and the one to carry into any future work where the system
-under test cannot be stopped and inspected.
-\textbf{T.~F.~Costantini} takes the driver--kernel interface: designing an ioctl
-ABI and a teardown order that are safe to freeze, and the realisation that the
-concurrency choice and the priority assignment are the same decision made twice.
-That is the part worth reusing when the next system is an RTOS rather than
-Linux.
-
-\paragraph{Questions that remained unanswered.} Self-heating at this duty cycle
-is \emph{not} characterised: measured thermal drift varied by two orders of
-magnitude between otherwise identical runs, and a much longer run is needed
-before treating it as settled. One acceptance criterion, that RMS noise fall
-monotonically at the OSS1 to OSS2 step, held in only one of five runs, and the
-sweep design looks more likely at fault than the driver: the modes are visited
-once each in sequence, so slow atmospheric drift lands on them unequally, and
-the datasheet difference between those two modes is 1~Pa against run-to-run
-scatter of about $\pm 1$~Pa. Interleaving the modes within a sweep is the change
-we would make before trusting that criterion.
 
 \paragraph{Tools we learned to use.} The RTEMS Source Builder and \texttt{waf}
 for building a cross toolchain and a BSP; the \texttt{arm-rtems7} compiler,
